@@ -1,0 +1,27 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body, html {
+    height: 100%;
+}
+
+#objFileInput, #textureFileInput, #trajectoryFileInput { display: none; }
+
+#guiContainer {
+    position: absolute;
+    width: 400px;
+    padding: 10px;
+}
+
+#loading {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 20px;
+    color: #ffffff;
+}
