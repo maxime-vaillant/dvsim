@@ -19,8 +19,6 @@ class Renderer:
             trajectory: Trajectory,
             camera_fov=45.0
     ):
-        self.debug = 0
-
         self.context = moderngl.create_standalone_context()
 
         self.height = height

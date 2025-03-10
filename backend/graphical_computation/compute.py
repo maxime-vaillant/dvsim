@@ -5,11 +5,9 @@ from typing import Dict, List
 
 import numpy as np
 import tqdm
-from matplotlib import pyplot as plt
 
 from backend.event_processing.event import UniformSamplingDynamicVisionProcessing
 from backend.graphical_computation.utils.renderer import Renderer
-from backend.optical_flow_processing.optical_flow import OpticalFlowProcessing
 from backend.saving.saver import Saver
 from backend.trajectories.trajectory import ImportedTrajectory, Trajectory
 from backend.vizualisation.visualizer import Visualizer
@@ -35,8 +33,6 @@ class Computation:
             c_plus=np.log(1.1),
             c_minus=np.log(1.1)
         )
-
-        self.optical_flow_processing = OpticalFlowProcessing()
 
         self.trajectory = trajectory
 
