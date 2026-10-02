@@ -11,9 +11,22 @@
         Loading 3D Object...
     </div>
     <div id="guiContainer"></div>
+    <div id="panelLabels" aria-hidden="true"></div>
+    <pre id="cameraInfo" title="View camera: position, heading and trajectory time" hidden></pre>
+    <div id="jobPanel" hidden>
+        <div class="job-header">
+            <strong id="jobStatus" aria-live="polite"></strong>
+            <button id="jobDismiss" type="button" title="Hide" aria-label="Hide">&times;</button>
+        </div>
+        <progress id="jobProgress" max="1"></progress>
+        <div id="jobDetail"></div>
+        <div id="jobError" hidden></div>
+        <ul id="jobFiles"></ul>
+        <button id="jobCancel" type="button" hidden>Cancel</button>
+    </div>
+    <div id="notice" role="status" hidden></div>
     <script type="module" src="src/main.js"></script>
-    <input type="file" id="objFileInput" accept=".obj" />
-    <input type="file" id="textureFileInput" accept="image/*" />
+    <input type="file" id="objFileInput" accept=".obj,.mtl,.png,.jpg,.jpeg" multiple />
     <input type="file" id="trajectoryFileInput" accept=".json" />
 </body>
 </html>

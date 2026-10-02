@@ -5,8 +5,11 @@ const DepthShader = {
 	uniforms: {
 
 		tDepth: { value: null },
-        uNear: { value: 0.1 },
-        uFar: { value: 5 },
+        // near / far planes of the camera that rendered the depth texture
+        uNear: { value: 0.01 },
+        uFar: { value: 10 },
+        // distance (scene units) that maps to black
+        uRange: { value: 10 },
 
 	},
 
@@ -22,16 +25,26 @@ const DepthShader = {
 		}`,
 
 	fragmentShader: /* glsl */`
-	
+
 		uniform sampler2D tDepth;
+        uniform float uNear;
+        uniform float uFar;
+        uniform float uRange;
+
         varying vec2 vUv;
 
 		void main() {
-		
+
+			// The depth buffer is non-linear in [0, 1]: recover the distance along the optical axis.
 			float depth = texture2D(tDepth, vUv).r;
-			
-			gl_FragColor = vec4(vec3(1.0 - depth), 1.0);
-			
+			float ndcZ = depth * 2.0 - 1.0;
+			float zDepth = (2.0 * uNear * uFar) / (uFar + uNear - ndcZ * (uFar - uNear));
+
+			// near = bright, far = dark, nothing rendered (cleared depth) = black
+			float shade = depth >= 1.0 ? 0.0 : 1.0 - clamp(zDepth / uRange, 0.0, 1.0);
+
+			gl_FragColor = vec4(vec3(shade), 1.0);
+
 		}`
 
 };

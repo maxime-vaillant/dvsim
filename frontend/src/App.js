@@ -2,16 +2,26 @@ import * as THREE from 'three';
 
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer, RenderPass, ShaderPass } from "three/addons";
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 import EventVisionShader from "./shaders/eventVisionShader";
-import DepthShader from "./shaders/depthShader";
 import { initGUI } from "./components/gui";
-import { getObjectCenter } from "./utils/objects.js";
+import { getObjectCenter, getObjectDimensions, getObjectFloor } from "./utils/objects.js";
+import { currentOrigin } from "./components/origin.js";
+import { frameOverview } from "./components/overview.js";
+import { clearLiveStart, initLiveStartPicking, publishLiveOrigin } from "./components/liveStart.js";
+import { applyEventThresholds, applyViewCameraSettings } from "./utils/cameraUpdater.js";
+import { selectedGeneratedPath, showGeneratedPaths, updateImportedTrajectory } from "./utils/trajectorySetup.js";
 import { loadCachedObject, loadCachedTexture, loadCachedTrajectory } from "./components/cache";
-import { onMouseDown, onMouseMove, onMouseUp } from "./components/listeners";
-import { render } from "./components/render";
+import { initFileInputs } from "./components/fileInputs";
+import { setDrawingEnabled } from "./components/listeners";
+import { render, resetDepthView, resetFlowView, resizeViewTargets } from "./components/render";
 import { THREE_VARIABLES } from "./components/variables";
+
+const clock = new THREE.Clock();
+const WORLD_ORIGIN = new THREE.Vector3();   // generated paths are in world coordinates
 
 
 export function initApp() {
@@ -30,7 +40,7 @@ export function initApp() {
         45,
         window.innerWidth / window.innerHeight,
         0.1,
-        20
+        100
     );
     THREE_VARIABLES.overviewCamera.position.y = 5;
     THREE_VARIABLES.overviewCamera.layers.enable(1);
@@ -51,10 +61,12 @@ export function initApp() {
         THREE_VARIABLES.overviewCamera,
         THREE_VARIABLES.renderer.domElement
     );
-    controls.enableRotate = false;
     controls.minDistance = 1;
-    controls.maxDistance = 10;
+    controls.maxDistance = 20;
     controls.addEventListener( 'change', render );
+
+    THREE_VARIABLES.controls = controls;
+    resizeViewTargets();
 
     // Loaders
 
@@ -63,28 +75,34 @@ export function initApp() {
     THREE_VARIABLES.textureLoader = new THREE.TextureLoader( manager );
     THREE_VARIABLES.objLoader = new OBJLoader( manager );
 
+    initFileInputs();
+
     loadCachedTexture().then();
     loadCachedObject().then();
     loadCachedTrajectory().then();
 
     // Listeners
 
+    setDrawingEnabled( THREE_VARIABLES.settings.trajectoryType === 'Custom' );
+    initLiveStartPicking();
     window.addEventListener( 'resize', onWindowResize );
-    window.addEventListener('mousedown', onMouseDown, false);
-    window.addEventListener('mousemove', onMouseMove, false);
-    window.addEventListener('mouseup', onMouseUp, false);
 }
 
 
 
 function initViewCamera() {
     if (THREE_VARIABLES.viewCamera) THREE_VARIABLES.scene.remove(THREE_VARIABLES.viewCamera);
+    if (THREE_VARIABLES.eventVisionComposer) THREE_VARIABLES.eventVisionComposer.dispose();
+
+    // Clipping planes and depth range follow the size of the scene.
+    const diagonal = getObjectDimensions( THREE_VARIABLES.room ).length();
+    const far = Math.max( 10, diagonal * 1.5 );
 
     THREE_VARIABLES.viewCamera = new THREE.PerspectiveCamera(
-        45,
-        2 * window.innerWidth / window.innerHeight,
-        0.1,
-        5
+        THREE_VARIABLES.settings.sim.fov,
+        window.innerWidth / window.innerHeight,
+        0.01,
+        far
     );
     THREE_VARIABLES.viewCamera.position.copy( THREE_VARIABLES.initialTrajectoryPoint );
     THREE_VARIABLES.viewCamera.layers.disable(1);
@@ -93,6 +111,7 @@ function initViewCamera() {
     const viewCameraSphereMaterial = new THREE.MeshBasicMaterial({ color: 0x8B0000 });
     const viewCameraSphere = new THREE.Mesh(viewCameraSphereGeometry, viewCameraSphereMaterial);
     viewCameraSphere.layers.set(1);
+    viewCameraSphere.scale.setScalar( THREE_VARIABLES.markerScale );
 
     const viewCameraArrowDirection = new THREE.Vector3(0, 0, -1);
     const viewCameraArrowLength = 0.2;
@@ -104,77 +123,72 @@ function initViewCamera() {
         viewCameraArrowColor
     );
     viewCameraArrowHelper.traverse( (node) => { node.layers.set(1) } )
+    viewCameraArrowHelper.scale.setScalar( THREE_VARIABLES.markerScale );
 
     THREE_VARIABLES.viewCamera.add(viewCameraSphere);
     THREE_VARIABLES.viewCamera.add(viewCameraArrowHelper);
 
     THREE_VARIABLES.scene.add( THREE_VARIABLES.viewCamera );
 
-    const renderEventVisionTarget = new THREE.WebGLRenderTarget(
-        window.innerWidth / 2,
-        window.innerHeight / 2
-    );
-    const renderDepthTarget = new THREE.WebGLRenderTarget(
-        window.innerWidth / 2,
-        window.innerHeight / 2,
-        {
-            type: THREE.FloatType,
-            depthTexture: new THREE.DepthTexture(),
-        }
-    );
+    resetDepthView({ near: THREE_VARIABLES.viewCamera.near, far, range: Math.min( far, Math.max( diagonal, 1 ) ) });
+    resetFlowView();
 
-    THREE_VARIABLES.eventVisionComposer = new EffectComposer( THREE_VARIABLES.renderer, renderEventVisionTarget );
-    THREE_VARIABLES.depthComposer = new EffectComposer( THREE_VARIABLES.renderer, renderDepthTarget );
+    THREE_VARIABLES.eventVisionComposer = new EffectComposer( THREE_VARIABLES.renderer, new THREE.WebGLRenderTarget( 1, 1 ) );
 
-    const renderPass = new RenderPass( THREE_VARIABLES.scene, THREE_VARIABLES.viewCamera );
     THREE_VARIABLES.eventVisionPass = new ShaderPass( EventVisionShader );
-    THREE_VARIABLES.depthPass = new ShaderPass( DepthShader );
 
-    THREE_VARIABLES.eventVisionComposer.addPass(renderPass);
-    THREE_VARIABLES.eventVisionComposer.addPass(THREE_VARIABLES.eventVisionPass);
+    THREE_VARIABLES.eventVisionComposer.addPass( new RenderPass( THREE_VARIABLES.scene, THREE_VARIABLES.viewCamera ) );
+    THREE_VARIABLES.eventVisionComposer.addPass( THREE_VARIABLES.eventVisionPass );
 
-    THREE_VARIABLES.depthComposer.addPass(renderPass);
-    THREE_VARIABLES.depthComposer.addPass(THREE_VARIABLES.depthPass);
+    applyViewCameraSettings();
+    applyEventThresholds();
+    resizeViewTargets();
 
+    // The event shader compares each frame to the previous one: render a first "previous frame".
     THREE_VARIABLES.renderer.setRenderTarget(THREE_VARIABLES.renderTarget);
     THREE_VARIABLES.renderer.render(THREE_VARIABLES.scene, THREE_VARIABLES.viewCamera);
 
     THREE_VARIABLES.eventVisionPass.uniforms.uPrevFrame.value = THREE_VARIABLES.renderTarget.texture;
-    THREE_VARIABLES.eventVisionPass.uniforms.threshold.value = THREE_VARIABLES.settings.eventVisionThreshold;
     THREE_VARIABLES.renderer.setRenderTarget(null);
-
-    THREE_VARIABLES.depthPass.uniforms['tDepth'].value = renderDepthTarget.depthTexture;
-    THREE_VARIABLES.depthPass.uniforms['uNear'].value = THREE_VARIABLES.viewCamera.near;
-    THREE_VARIABLES.depthPass.uniforms['uFar'].value = THREE_VARIABLES.viewCamera.far;
-
 }
 
 function animate() {
+    const deltaTime = Math.min( clock.getDelta(), 0.1 );
+
     switch (THREE_VARIABLES.settings.trajectoryType) {
         case 'Custom':
-            animateCustomTrajectory();
+            animateCustomTrajectory( deltaTime );
             break
         case 'Imported':
-            animateImportedTrajectory();
+            animateRecords( THREE_VARIABLES.trajectoryData, currentOrigin(), THREE_VARIABLES.trajectoryDurationS, deltaTime );
             break
+        case 'Generated': {
+            const path = selectedGeneratedPath();
+
+            if (path) animateRecords( path.records, WORLD_ORIGIN, path.durationS, deltaTime );
+            break
+        }
         case 'Live':
             animateLiveTrajectory();
     }
 }
 
-function animateCustomTrajectory() {
-    if ( THREE_VARIABLES.viewCamera && THREE_VARIABLES.isPlaying ) {
-        THREE_VARIABLES.viewCamera.position.copy( THREE_VARIABLES.trajectoryCurve.getPointAt( THREE_VARIABLES.animationProgress ) );
+// The previews play in real time: the drawn curve at its speed (m/s), records (imported file, generated
+// path) at their own timestamps.
+function animateCustomTrajectory( deltaTime ) {
+    const curve = THREE_VARIABLES.trajectoryCurve;
 
-        if ( THREE_VARIABLES.animationProgress + 0.01 <= 1) {
-            THREE_VARIABLES.viewCamera.lookAt( THREE_VARIABLES.trajectoryCurve.getPointAt( THREE_VARIABLES.animationProgress + 0.01 ) );
-        }
+    if ( THREE_VARIABLES.viewCamera && THREE_VARIABLES.isPlaying && curve ) {
+        const progress = Math.min( THREE_VARIABLES.animationProgress, 1 );
+
+        THREE_VARIABLES.viewCamera.position.copy( curve.getPointAt( progress ) );
+        THREE_VARIABLES.viewCamera.lookAt( THREE_VARIABLES.viewCamera.position.clone().add( curve.getTangentAt( progress ) ) );
 
         render();
 
-        THREE_VARIABLES.trajectoryDistance += THREE_VARIABLES.settings.animationSpeed;
+        THREE_VARIABLES.trajectoryDistance += THREE_VARIABLES.settings.sim.speed * THREE_VARIABLES.settings.animationSpeed * deltaTime;
 
-        THREE_VARIABLES.animationProgress = THREE_VARIABLES.trajectoryDistance / THREE_VARIABLES.trajectoryCurve.getLength();
+        THREE_VARIABLES.animationProgress = THREE_VARIABLES.trajectoryDistance / curve.getLength();
 
         if (THREE_VARIABLES.animationProgress >= 1) {
             THREE_VARIABLES.isPlaying = false;
@@ -184,50 +198,56 @@ function animateCustomTrajectory() {
     }
 }
 
-function animateImportedTrajectory() {
-    if ( THREE_VARIABLES.viewCamera && THREE_VARIABLES.isPlaying ) {
-        while (THREE_VARIABLES.currentTrajectoryIndex < THREE_VARIABLES.trajectoryData.length - 1 && THREE_VARIABLES.animationProgress > THREE_VARIABLES.trajectoryData[THREE_VARIABLES.currentTrajectoryIndex + 1].normalizedTimestamp) {
+// Records are relative to `origin` (imported files: the object centre; generated paths: the world origin).
+function animateRecords( trajectoryData, origin, durationS, deltaTime ) {
+    if ( THREE_VARIABLES.viewCamera && THREE_VARIABLES.isPlaying && trajectoryData.length >= 2 && origin ) {
+        while (THREE_VARIABLES.currentTrajectoryIndex < trajectoryData.length - 1 && THREE_VARIABLES.animationProgress > trajectoryData[THREE_VARIABLES.currentTrajectoryIndex + 1].normalizedTimestamp) {
             THREE_VARIABLES.currentTrajectoryIndex++;
         }
 
-        if (THREE_VARIABLES.currentTrajectoryIndex < THREE_VARIABLES.trajectoryData.length - 1) {
+        if (THREE_VARIABLES.currentTrajectoryIndex < trajectoryData.length - 1) {
 
-            const currentTrajectoryPosition = THREE_VARIABLES.trajectoryData[THREE_VARIABLES.currentTrajectoryIndex];
-            const nextTrajectoryPosition = THREE_VARIABLES.trajectoryData[THREE_VARIABLES.currentTrajectoryIndex + 1];
+            const currentTrajectoryPosition = trajectoryData[THREE_VARIABLES.currentTrajectoryIndex];
+            const nextTrajectoryPosition = trajectoryData[THREE_VARIABLES.currentTrajectoryIndex + 1];
 
-            const interpolationFactor = (THREE_VARIABLES.animationProgress - currentTrajectoryPosition.normalizedTimestamp) / (nextTrajectoryPosition.normalizedTimestamp - currentTrajectoryPosition.normalizedTimestamp);
+            const span = nextTrajectoryPosition.normalizedTimestamp - currentTrajectoryPosition.normalizedTimestamp;
+            const interpolationFactor = span > 0
+                ? THREE.MathUtils.clamp( (THREE_VARIABLES.animationProgress - currentTrajectoryPosition.normalizedTimestamp) / span, 0, 1 )
+                : 0;
 
             THREE_VARIABLES.viewCamera.position.lerpVectors(
                 new THREE.Vector3(
-                    THREE_VARIABLES.initialTrajectoryPoint.x + currentTrajectoryPosition.x,
-                    THREE_VARIABLES.initialTrajectoryPoint.y + currentTrajectoryPosition.y,
-                    THREE_VARIABLES.initialTrajectoryPoint.z + currentTrajectoryPosition.z
+                    origin.x + currentTrajectoryPosition.x,
+                    origin.y + currentTrajectoryPosition.y,
+                    origin.z + currentTrajectoryPosition.z
                 ),
                 new THREE.Vector3(
-                    THREE_VARIABLES.initialTrajectoryPoint.x + nextTrajectoryPosition.x,
-                    THREE_VARIABLES.initialTrajectoryPoint.y + nextTrajectoryPosition.y,
-                    THREE_VARIABLES.initialTrajectoryPoint.z + nextTrajectoryPosition.z
+                    origin.x + nextTrajectoryPosition.x,
+                    origin.y + nextTrajectoryPosition.y,
+                    origin.z + nextTrajectoryPosition.z
                 ),
                 interpolationFactor
             );
 
-            const currentPositionLookAt = new THREE.Vector3(
+            const currentPositionDirection = new THREE.Vector3(
                 currentTrajectoryPosition.rx,
                 currentTrajectoryPosition.ry,
                 currentTrajectoryPosition.rz
             )
-            const nextPositionLookAt = new THREE.Vector3(
+            const nextPositionDirection = new THREE.Vector3(
                 nextTrajectoryPosition.rx,
                 nextTrajectoryPosition.ry,
                 nextTrajectoryPosition.rz
             )
 
-            THREE_VARIABLES.viewCamera.lookAt( currentPositionLookAt.lerp( nextPositionLookAt, interpolationFactor ))
+            const direction = currentPositionDirection.lerp( nextPositionDirection, interpolationFactor )
+            const targetPosition = THREE_VARIABLES.viewCamera.position.clone().add(direction);
+            THREE_VARIABLES.viewCamera.lookAt( targetPosition )
         }
 
         render();
 
-        THREE_VARIABLES.animationProgress += THREE_VARIABLES.settings.animationSpeed;
+        THREE_VARIABLES.animationProgress += THREE_VARIABLES.settings.animationSpeed * deltaTime / durationS;
 
         if (THREE_VARIABLES.animationProgress >= 1) {
             THREE_VARIABLES.isPlaying = false;
@@ -246,80 +266,46 @@ function onWindowResize() {
     THREE_VARIABLES.overviewCamera.aspect = window.innerWidth / window.innerHeight;
     THREE_VARIABLES.overviewCamera.updateProjectionMatrix();
 
-    if ( THREE_VARIABLES.viewCamera ) {
-        THREE_VARIABLES.viewCamera.aspect = window.innerWidth / window.innerHeight;
-        THREE_VARIABLES.viewCamera.updateProjectionMatrix();
-    }
+    // Each view is a quarter of the window: same aspect as the window.
+    applyViewCameraSettings();
+    resizeViewTargets();
 
     render();
 }
 
 function loadModel() {
-    THREE_VARIABLES.room.traverse( function ( child ) {
-        if ( child.isMesh ) child.material.map = THREE_VARIABLES.texture;
-    } );
+    if ( !THREE_VARIABLES.room ) return;
 
-    THREE_VARIABLES.room.scale.setScalar( 0.5 );
+    if ( THREE_VARIABLES.texture && !THREE_VARIABLES.roomHasMaterials ) {
+        THREE_VARIABLES.room.traverse( function ( child ) {
+            if ( child.isMesh ) {
+                [].concat( child.material ).forEach( material => {
+                    material.map = THREE_VARIABLES.texture;
+                    material.needsUpdate = true;
+                } );
+            }
+        } );
+    }
 
     const objCenter = getObjectCenter(THREE_VARIABLES.room);
 
+    clearLiveStart({ quiet: true });   // a start picked in the previous scene means nothing here
+
+    frameOverview( objCenter, getObjectDimensions( THREE_VARIABLES.room ).length() );
+
     THREE_VARIABLES.roomAvgHeight = objCenter.y / 2
     THREE_VARIABLES.initialTrajectoryPoint = objCenter;
+    THREE_VARIABLES.objectFloorY = getObjectFloor( THREE_VARIABLES.room );
 
     THREE_VARIABLES.scene.add( THREE_VARIABLES.room );
 
     initViewCamera();
 
+    // Imported trajectories are drawn relative to the object centre; generated ones belong to one object
+    if ( THREE_VARIABLES.settings.trajectoryType === 'Imported' ) updateImportedTrajectory();
+    if ( THREE_VARIABLES.settings.trajectoryType === 'Generated' ) showGeneratedPaths();
+
+    publishLiveOrigin();   // the simulator's phone view starts where this page's Live view does
+
     render();
 }
-
-const objFileInput = document.getElementById('objFileInput');
-objFileInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-
-    if (file) {
-        try {
-            const cache = await caches.open('obj-cache')
-
-            await cache.put('/obj', new Response(file));
-        } catch (error) {
-            console.log('Error caching file:', error)
-        }
-    }
-
-    await loadCachedObject();
-});
-
-const textureFileInput = document.getElementById('textureFileInput');
-textureFileInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-
-    if (file) {
-        try {
-            const cache = await caches.open('obj-cache')
-
-            await cache.put('/texture', new Response(file));
-        } catch (error) {
-            console.log('Error caching file:', error)
-        }
-    }
-
-    await loadCachedTexture();
-});
-
-const trajectoryFileInput = document.getElementById('trajectoryFileInput');
-trajectoryFileInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-
-    if (file) {
-        try {
-            const cache = await caches.open('obj-cache')
-
-            await cache.put('/trajectory', new Response(file));
-        } catch (error) {
-            console.log('Error caching file:', error)
-        }
-    }
-
-    await loadCachedTrajectory();
-})

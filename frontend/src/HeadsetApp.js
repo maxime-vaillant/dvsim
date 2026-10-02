@@ -2,9 +2,9 @@ import * as THREE from 'three';
 
 import { ARButton } from "three/examples/jsm/webxr/ARButton.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { XRControllerModelFactory } from "three/addons";
+import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
 
-import { config } from "../config.js";
+import { getWsBase } from "./api/urls.js";
 import { endpoints } from "../endpoints.js";
 
 // 3D scene
@@ -135,16 +135,14 @@ function handleControllerButtonPressed() {
 }
 
 function initiateWebsocket(){
-    websocket = new WebSocket(config.BASE_WS_URL + endpoints.HEADSET);
+    websocket = new WebSocket(getWsBase() + endpoints.HEADSET);
 
     websocket.addEventListener('open', () => {
         isWsOpen = true;
-        console.log('WebSocket connection established');
     })
 
     websocket.addEventListener('close', () => {
         isWsOpen = false;
-        console.log('WebSocket connection closed');
     })
 
     websocket.addEventListener('error', (error) => {

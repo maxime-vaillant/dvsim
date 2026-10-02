@@ -1,136 +1,108 @@
-import asyncio
-import json
+"""FastAPI app: ``uvicorn backend.api.main:app`` (that is what ``dvsim serve`` runs)."""
+from __future__ import annotations
+
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
-import uuid
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 
-from pydantic.v1 import BaseSettings
-
-
-# Configuration
-class Settings(BaseSettings):
-    RECORDING_PATH: Path = Path("./assets/trajectories")
-    LOG_LEVEL: str = "INFO"
-
-# Data models
-class PositionData(BaseModel):
-    timestamp: float
-    x: Optional[float] = None
-    y: Optional[float] = None
-    z: Optional[float] = None
-    rx: Optional[float] = None
-    ry: Optional[float] = None
-    rz: Optional[float] = None
-
-class WebSocketMessage(BaseModel):
-    action: str
-    data: PositionData
-
-class ConnectionManager:
-    def __init__(self):
-        self.spectators: Dict[uuid.UUID, WebSocket] = {}
-        self._lock = asyncio.Lock()
-
-    async def connect(self, websocket: WebSocket) -> uuid.UUID:
-        await websocket.accept()
-        spectator_id = uuid.uuid4()
-        async with self._lock:
-            self.spectators[spectator_id] = websocket
-        return spectator_id
-
-    async def disconnect(self, spectator_id: uuid.UUID) -> None:
-        async with self._lock:
-            self.spectators.pop(spectator_id, None)
-
-    async def broadcast(self, message: dict) -> None:
-        async with self._lock:
-            await asyncio.gather(
-                *[spectator.send_text(json.dumps(message))
-                  for spectator in self.spectators.values()],
-                return_exceptions=True
-            )
+from backend.api import headset, live, routes
+from backend.api.jobs import JobManager
+from backend.api.limits import BodyLimitMiddleware
+from backend.api.live import LiveManager
+from backend.api.preview import TrajectoryPreviewer
+from backend.api.settings import MAX_JSON_BYTES, Settings
+from backend.api.stores import SceneStore, TrajectoryStore
+from backend.api.util import NotFound
 
 
-
-# Application setup
-app = FastAPI()
-settings = Settings()
-manager = ConnectionManager()
-
-# Configure logging
-logging.basicConfig(level=settings.LOG_LEVEL)
-logger = logging.getLogger(__name__)
-
-@app.websocket("/spectate")
-async def process_spectator(websocket: WebSocket):
-    spectator_id = await manager.connect(websocket)
-    logger.info(f"Spectator {spectator_id} connected")
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await manager.disconnect(spectator_id)
-        logger.info(f"Spectator {spectator_id} disconnected")
+def _configure_logging() -> None:
+    log = logging.getLogger("dvsim")
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        log.propagate = False
 
 
-@app.websocket("/headset")
-async def process_headset(websocket: WebSocket):
-    await websocket.accept()
-    recording: List[dict] = []
-    is_recording = False
-    start_time: Optional[int] = None
+def describe_errors(errors: List[Dict[str, Any]], limit: int = 5) -> str:
+    """Pydantic error list -> one readable string ("trajectory.rectilinear.duration_s: Input should be > 0")."""
+    parts = []
+    for error in errors[:limit]:
+        kind = error.get("type")
+        loc = [str(item) for item in error.get("loc", ())]
+        loc = [] if kind == "json_invalid" else loc[1:] if loc[:1] == ["body"] else loc
+        message = {
+            "extra_forbidden": "unknown key", "missing": "field required", "json_invalid": "invalid JSON body",
+        }.get(kind, error.get("msg"))
+        parts.append(f"{'.'.join(loc)}: {message}" if loc else str(message))
+    if len(errors) > limit:
+        parts.append(f"(+{len(errors) - limit} more)")
+    return "; ".join(parts)
 
-    try:
-        while True:
-            try:
-                message = WebSocketMessage.model_validate_json(await websocket.receive_text())
-                print(message)
 
-                if message.action == "start_recording":
-                    is_recording = True
-                    start_time = message.data.timestamp
-                    logger.info("Started recording")
+def create_app(data_dir: Optional[Path] = None) -> FastAPI:
+    """Build the app. Data root: ``data_dir`` or ``$DVSIM_DATA_DIR`` (default ./data); subdirectories appear on use."""
+    settings = Settings.from_env(data_dir)
+    jobs = JobManager(
+        settings.jobs_dir, settings.max_running_jobs, settings.max_pending_jobs, settings.cancel_grace_s
+    )
 
-                elif message.action == "stream_data":
-                    await manager.broadcast(message.data.model_dump())
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        _configure_logging()
+        jobs.start()
+        try:
+            yield
+        finally:
+            app.state.live.stop_all()
+            jobs.stop()
 
-                    if is_recording:
-                        recording.append(message.data.model_dump())
+    app = FastAPI(
+        title="DVSim", version=routes.package_version(), lifespan=lifespan,
+        docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json",
+    )
+    app.state.settings = settings
+    app.state.scenes = SceneStore(settings.scenes_dir)
+    app.state.trajectories = TrajectoryStore(settings.trajectories_dir)
+    app.state.jobs = jobs
+    app.state.hub = headset.SpectatorHub()
+    app.state.previewer = TrajectoryPreviewer()
+    app.state.live = LiveManager()
 
-                elif message.action == "stop_recording" and is_recording:
-                    is_recording = False
-                    end_time = message.data.timestamp
-                    duration = end_time - start_time if start_time else 0
+    @app.exception_handler(NotFound)
+    async def not_found(_: Request, exc: NotFound) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=404)
 
-                    logger.info(
-                        f"Recording stats: size={len(recording)}, "
-                        f"duration={duration:.1f}ms, "
-                        f"frequency={1000 * len(recording) / duration:.1f}Hz"
-                    )
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse({"detail": describe_errors(exc.errors())}, status_code=422)
 
-                    # Save recording
-                    recordings = list(settings.RECORDING_PATH.glob("recording_*.json"))
-                    next_number = len(recordings) + 1
+    app.add_middleware(BodyLimitMiddleware, upload_limit=settings.max_upload_bytes,
+                       default_limit=min(settings.max_upload_bytes, MAX_JSON_BYTES))
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["*"], allow_headers=["*"],
+        )
+    app.include_router(routes.router)
+    app.include_router(headset.router)
+    app.include_router(live.router)
 
-                    file_path = settings.RECORDING_PATH / f"recording_{next_number}.json"
-                    file_path.write_text(json.dumps(recording))
-                    logger.info(f"Saved recording to {file_path}")
+    if settings.frontend_dir.is_dir():
+        app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="frontend")
+    else:
+        @app.get("/", include_in_schema=False)
+        def index() -> dict:
+            return {"name": "DVSim API", "docs": "/api/docs", "frontend": "not built (npm run build in frontend/)"}
 
-                    recording = []
+    return app
 
-                else:
-                    logger.warning(f"Unknown action received: {message.action}")
 
-            except json.JSONDecodeError:
-                logger.error("Received invalid JSON message")
-            except Exception as e:
-                logger.error(f"Error processing message: {str(e)}")
-                break
-
-    except WebSocketDisconnect:
-        logger.info("Headset disconnected")
+app = create_app()

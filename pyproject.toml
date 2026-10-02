@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dvsim"
+version = "0.2.0"
+description = "DVSim: event-camera (DVS) simulator with ground-truth depth, optical flow and pose"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "moderngl>=5.8",
+    "trimesh>=4.0",
+    "pillow>=10",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "hdf5plugin>=4.0",
+    "opencv-python-headless>=4.8",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]",
+    "python-multipart",
+]
+torch = [
+    "torch>=2.0",
+]
+dev = [
+    "pytest",
+    "httpx",
+    "ruff",
+]
+all = [
+    "dvsim[api,torch,dev]",
+]
+
+[project.scripts]
+dvsim = "backend.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+exclude = ["tests*", "*__pycache__*"]
+
+[tool.setuptools.package-data]
+# paths are relative to the `backend` package
+backend = [
+    "graphical_computation/shaders/*.vert",
+    "graphical_computation/shaders/*.frag",
+    "graphical_computation/shaders/*.glsl",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "gl: needs an OpenGL context (skipped when none can be created)",
+    "slow: long-running test",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# correctness only: the codebase deliberately uses typing.Optional/List for Python 3.9 compatibility
+select = ["E", "F", "W", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E702", "E731", "B007", "B023"]  # long literal test data, compact helpers

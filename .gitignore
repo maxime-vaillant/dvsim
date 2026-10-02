@@ -6,3 +6,27 @@ outputs
 
 # SSL
 ssl
+
+# MISC
+.idea
+.DS_Store
+
+# Data (scenes / trajectories / job outputs, see $DVSIM_DATA_DIR)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Build
+build/
+dist/
+.venv*/
+
+# local scratch space (venvs, benchmark scenes, throwaway scripts)
+.claude/scratch/

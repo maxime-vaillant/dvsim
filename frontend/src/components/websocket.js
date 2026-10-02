@@ -1,37 +1,46 @@
-import * as THREE from "three";
-
 import { THREE_VARIABLES } from "./variables";
+import { worldLivePose } from "./liveStart.js";
 import { updateViewCamera } from "../utils/cameraUpdater.js";
-import { config } from "../../config.js";
+import { notify } from "../utils/notify.js";
+import { getWsBase } from "../api/urls.js";
 import { endpoints } from "../../endpoints.js";
 
 
 export function initiateWebsocket() {
-    THREE_VARIABLES.websocket = new WebSocket(config.BASE_WS_URL + endpoints.SPECTATOR);
+    if (!THREE_VARIABLES.initialTrajectoryPoint) {
+        notify('Load a scene first (Loading > Load scene): live positions are relative to it.', { level: 'error' });
+        return;
+    }
+
+    THREE_VARIABLES.websocket = new WebSocket(getWsBase() + endpoints.SPECTATOR);
 
     THREE_VARIABLES.websocket.addEventListener('open', () => {
-        console.log('WebSocket connection established');
+        THREE_VARIABLES.isWsOpen = true;
     })
 
     THREE_VARIABLES.websocket.addEventListener('message', (event) => {
-        const parsedData = JSON.parse(event.data);
+        if (!THREE_VARIABLES.viewCamera) return;
 
-        const position = new THREE.Vector3(
-            parsedData.x + THREE_VARIABLES.initialTrajectoryPoint.x,
-            parsedData.y + THREE_VARIABLES.initialTrajectoryPoint.y,
-            parsedData.z + THREE_VARIABLES.initialTrajectoryPoint.z
-        );
-        const lookAt = new THREE.Vector3(parsedData.rx, parsedData.ry, parsedData.rz);
+        let parsedData;
+        try {
+            parsedData = JSON.parse(event.data);
+        } catch {
+            return;
+        }
 
-        updateViewCamera(position, lookAt);
+        // the pose is relative to the live origin (the picked start point, or "Positions relative to");
+        // (rx, ry, rz) is a direction: the camera looks at the point one unit ahead
+        const pose = worldLivePose(parsedData);
+
+        if (pose) updateViewCamera(pose.position, pose.lookAt);
     })
 
     THREE_VARIABLES.websocket.addEventListener('close', () => {
-        console.log('WebSocket connection closed');
+        THREE_VARIABLES.isWsOpen = false;
     })
 
-    THREE_VARIABLES.websocket.addEventListener('error', (error) => {
+    THREE_VARIABLES.websocket.addEventListener('error', () => {
         THREE_VARIABLES.isWsOpen = false;
-        console.error('WebSocket error:', error);
+        notify('Live connection failed: is the headset relay reachable?', { level: 'error' });
     })
 }

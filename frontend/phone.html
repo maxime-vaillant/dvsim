@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>DVSim phone</title>
+    <link rel="stylesheet" href="src/phone.css">
+</head>
+<body>
+    <div id="phoneUi">
+        <canvas id="liveFrame" hidden></canvas>
+        <header>
+            <span id="phoneConnection" class="chip">connecting...</span>
+            <span id="phoneLive" class="chip" hidden></span>
+            <span id="phoneRecording" class="chip rec" hidden>REC 0:00</span>
+        </header>
+
+        <main id="phoneIntro">
+            <h1>DVSim phone</h1>
+            <p>Move your phone to move the camera of the simulator's <b>Live</b> view (Trajectory &gt; Type &gt; Live).</p>
+            <p id="phoneHelp"></p>
+            <fieldset id="phoneLiveSetup">
+                <legend>Simulator view on this phone</legend>
+                <label>Scene <select id="liveScene"></select></label>
+                <label>View <select id="liveView"></select></label>
+                <label>Positions relative to
+                    <select id="liveOrigin">
+                        <option value="shared">As in the interface (its picked live start)</option>
+                        <option value="centre">Object centre</option>
+                        <option value="floor">Floor centre (1.5 m up)</option>
+                    </select>
+                </label>
+                <label>Resolution <select id="liveSize"></select></label>
+            </fieldset>
+            <div id="phoneStart"></div>
+        </main>
+
+        <section id="phoneHud" hidden>
+            <pre id="phonePose">x 0.00  y 0.00  z 0.00 m
+heading 0°  pitch 0°</pre>
+            <div class="row" id="phoneViews" hidden></div>
+            <div class="row">
+                <button id="phoneRecenter" type="button">Recenter</button>
+                <button id="phoneRecord" type="button">Record</button>
+            </div>
+            <label id="phoneSpeedRow"><span>Walking speed <output id="phoneSpeedValue">1.4</output> m/s</span>
+                <input id="phoneSpeed" type="range" min="0.2" max="5" step="0.1" value="1.4">
+            </label>
+        </section>
+
+        <section id="phonePads" hidden>
+            <div class="pad" id="padMove" aria-label="Move: forward / back, left / right"><div class="knob"></div></div>
+            <div class="pad vertical" id="padHeight" aria-label="Height: up / down"><div class="knob"></div></div>
+        </section>
+    </div>
+    <script type="module" src="src/phone.js"></script>
+</body>
+</html>
