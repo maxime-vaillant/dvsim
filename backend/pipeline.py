@@ -40,7 +40,9 @@ def build_trajectories(
        "min_clearance": float}
       {"type": "street", "duration_s": float, "count": int, "seed": int | None, "speed": float (m/s, 1.4),
        "eye_height": float (m, 1.6), "min_clearance": float (m to obstacles, 1.0),
-       "edge_margin": float (m to the scene edge, 5.0)}  -- eye-height walks, +Y up
+       "edge_margin": float (m to the scene edge, 5.0),
+       "motion": {"model": id} | {"path": file} | None}  -- eye-height walks, +Y up; ``motion`` replaces the planner's
+       glide by sampled human head motion (a trained model, see backend.motion; needs torch)
     Generated types need ``scene`` (their free space is computed from its geometry, once per call). ``cache``: a dict
     kept by the caller to reuse that free space across calls on the same scene (generation is deterministic given the
     seed, so cached and fresh results are identical).
@@ -93,8 +95,26 @@ def _build_one(spec: Dict[str, Any], scene: Optional[Scene], cache: Dict[Any, An
             gen = cache[key] = StreetTrajectoryGenerator(scene.to_trimesh(), **params)
         rng = np.random.default_rng(spec.get("seed"))
         duration_us = int(round(float(spec["duration_s"]) * 1e6))
-        return gen.generate_many(int(spec.get("count", 1)), duration_us, rng=rng)
+        trajs = gen.generate_many(int(spec.get("count", 1)), duration_us, rng=rng)
+        if spec.get("motion"):
+            style = _motion_style(spec["motion"], cache)
+            trajs = [style.apply(t, rng=rng) for t in trajs]
+        return trajs
     raise ValueError(f"unknown trajectory type: {kind!r}")
+
+
+def _motion_style(motion: Dict[str, Any], cache: Dict[Any, Any]):
+    """The loaded motion model a ``motion`` spec names (kept in ``cache``: loading is the slow part)."""
+    from backend.motion.registry import resolve_model
+
+    path = resolve_model(motion)
+    key = ("motion", str(path.resolve()))
+    style = cache.get(key)
+    if style is None:
+        from backend.motion.style import DiffusionMotionStyle  # imports torch: fails with an install hint without it
+
+        style = cache[key] = DiffusionMotionStyle.load(path)
+    return style
 
 
 def run_to_disk(

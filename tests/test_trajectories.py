@@ -778,3 +778,45 @@ def test_street_from_pipeline_spec():
         assert np.allclose(tr.positions[:, 1], 1.2, atol=0.16)
     with pytest.raises(ValueError, match="need a scene"):
         build_trajectories({"type": "street", "duration_s": 1.0})
+
+
+# ---- street walks with learned human motion -------------------------------------------------------------------------
+def test_street_spec_with_motion_replaces_the_glide(motion_checkpoint):
+    from backend.pipeline import build_trajectories
+
+    class SceneLike:
+        def to_trimesh(self):
+            return make_town()
+
+    spec = {"type": "street", "duration_s": 4.0, "count": 2, "seed": 3, "speed": 1.3, "eye_height": 1.6}
+    plain = build_trajectories(spec, SceneLike())
+    cache = {}
+    human = build_trajectories({**spec, "motion": {"path": str(motion_checkpoint)}}, SceneLike(), cache)
+    again = build_trajectories({**spec, "motion": {"path": str(motion_checkpoint)}}, SceneLike(), cache)
+    assert len(human) == 2 and sum(k[0] == "motion" for k in cache if isinstance(k, tuple)) == 1   # loaded once
+    for p, h, h2 in zip(plain, human, again):
+        assert h.start_us == p.start_us and abs(h.end_us - p.end_us) < 20_000
+        assert len(h) > len(p) and np.array_equal(h.positions, h2.positions)       # sampled at 50 Hz, reproducible
+        assert not np.allclose(h.quats[:, 2], p.quats[0, 2])                       # it rolls: the glide did not
+
+
+def test_motion_errors_are_specific(tmp_path, monkeypatch):
+    import sys
+
+    from backend.pipeline import build_trajectories
+
+    class SceneLike:
+        def to_trimesh(self):
+            return make_town()
+
+    spec = {"type": "street", "duration_s": 2.0, "seed": 1}
+    with pytest.raises(FileNotFoundError, match="motion model file not found"):
+        build_trajectories({**spec, "motion": {"path": str(tmp_path / "gone.pt")}}, SceneLike())
+    with pytest.raises(ValueError, match="invalid motion model id"):
+        build_trajectories({**spec, "motion": {"model": "../x"}}, SceneLike())
+    (tmp_path / "m.pt").write_bytes(b"x")
+    for name in ("backend.motion.style", "backend.motion.train", "backend.motion.model"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "torch", None)                                   # torch is not installed
+    with pytest.raises(ImportError, match=r"pip install -e \.\[torch\]"):
+        build_trajectories({**spec, "motion": {"path": str(tmp_path / "m.pt")}}, SceneLike())
