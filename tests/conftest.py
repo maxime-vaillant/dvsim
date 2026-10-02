@@ -43,3 +43,20 @@ def demo_scene(tmp_path_factory):
 def demo_scene_dir(demo_scene):
     """Directory (Path) holding demo_room.obj/.png, demo_objects.glb, demo_scene.json, demo_trajectory.json."""
     return demo_scene.root
+
+
+@pytest.fixture(scope="session")
+def motion_checkpoint(tmp_path_factory):
+    """A tiny trained motion model (a few seconds on the CPU): enough to exercise loading and sampling."""
+    pytest.importorskip("torch")
+    from motion_helpers import synthetic_walk
+
+    from backend.motion.dataset import Stats, build_sequences
+    from backend.motion.train import TrainConfig, train
+
+    seqs = build_sequences([synthetic_walk(i) for i in range(6)])
+    path = tmp_path_factory.mktemp("motion") / "tiny.pt"
+    cfg = TrainConfig(steps=120, batch=8, base=16, mults=(1, 2), diffusion_steps=200, val_every=60, val_batches=2,
+                      val_frac=0.0, test_frac=0.5)
+    train(seqs, [], Stats.fit(seqs), cfg, path, device="cpu", log=lambda message: None)
+    return path

@@ -1,0 +1,75 @@
+"""motion: training, checkpoints and what loading one accepts (needs torch)."""
+from __future__ import annotations
+
+import json
+
+import pytest
+from motion_helpers import synthetic_walk
+
+torch = pytest.importorskip("torch")
+from backend.motion.dataset import Stats, build_sequences  # noqa: E402
+from backend.motion.train import CHECKPOINT_VERSION, TrainConfig, load_checkpoint, train  # noqa: E402
+
+SEQS = build_sequences([synthetic_walk(i) for i in range(4)])
+TINY = dict(batch=8, base=16, mults=(1, 2), diffusion_steps=100, val_batches=1)
+
+
+def test_the_fixture_checkpoint_holds_only_plain_data(motion_checkpoint):
+    ckpt = torch.load(motion_checkpoint, weights_only=True)                  # would raise on anything executable
+    assert ckpt["version"] == CHECKPOINT_VERSION and ckpt["step"] == 120
+    assert json.loads(ckpt["sources"]) == ["syn"] and json.loads(ckpt["config"])["base"] == 16
+    assert all(isinstance(v, torch.Tensor) for v in ckpt["state_dict"].values())
+
+
+def test_load_gives_an_eval_model_and_its_training_setup(motion_checkpoint):
+    model, cfg, stats, sources = load_checkpoint(motion_checkpoint, "cpu")
+    assert not model.training and (cfg.base, cfg.mults) == (16, (1, 2)) and sources == ["syn"]
+    assert 0.5 < stats.speed_range[0] < stats.speed_range[1] < 2.0
+
+
+def test_training_reports_the_validation_loss(tmp_path):
+    cfg = TrainConfig(steps=20, val_every=10, **TINY)
+    lines = []
+    history = train(SEQS[:3], SEQS[3:], Stats.fit(SEQS[:3]), cfg, tmp_path / "m.pt", device="cpu", log=lines.append)
+    assert [h["step"] for h in history] == [10, 20] and all(h["val_loss"] > 0 for h in history)
+    assert len(lines) == 2 and "val" in lines[0] and (tmp_path / "m.pt").is_file()
+
+
+def test_the_same_seed_trains_the_same_model(tmp_path):
+    cfg = TrainConfig(steps=10, val_every=10, **TINY)
+    for name in ("a.pt", "b.pt"):
+        train(SEQS, [], Stats.fit(SEQS), cfg, tmp_path / name, device="cpu", log=lambda m: None)
+    a, b = (torch.load(tmp_path / n, weights_only=True)["state_dict"] for n in ("a.pt", "b.pt"))
+    assert all(torch.equal(a[k], b[k]) for k in a)
+
+
+def test_training_can_continue_from_a_checkpoint(motion_checkpoint, tmp_path):
+    cfg = TrainConfig(steps=5, val_every=5, **TINY)
+    train(SEQS, [], Stats.fit(SEQS), cfg, tmp_path / "next.pt", device="cpu", init=str(motion_checkpoint), log=lambda m: None)
+    assert load_checkpoint(tmp_path / "next.pt", "cpu")[1].steps == 5
+    other = TrainConfig(steps=5, **{**TINY, "base": 32})
+    with pytest.raises(ValueError, match="--init model has base=16"):
+        train(SEQS, [], Stats.fit(SEQS), other, tmp_path / "x.pt", device="cpu", init=str(motion_checkpoint))
+
+
+class _NotATensor:
+    pass
+
+
+def test_bad_files_are_refused_cleanly(tmp_path):
+    torch.save({"version": "other"}, tmp_path / "old.pt")
+    with pytest.raises(ValueError, match="not a dvsim-motion-1 checkpoint"):
+        load_checkpoint(tmp_path / "old.pt", "cpu")
+    torch.save(_NotATensor(), tmp_path / "pickle.pt")                         # arbitrary objects are never unpickled
+    with pytest.raises(ValueError, match="cannot read this file"):
+        load_checkpoint(tmp_path / "pickle.pt", "cpu")
+    (tmp_path / "junk.pt").write_bytes(b"not a torch file")
+    with pytest.raises(ValueError, match="cannot read this file"):
+        load_checkpoint(tmp_path / "junk.pt", "cpu")
+
+
+def test_the_split_settings_are_stored_for_the_evaluation(tmp_path):
+    cfg = TrainConfig(steps=2, val_every=2, val_frac=0.2, test_frac=0.3, split_seed=7, holdout_sources=("a", "b"), **TINY)
+    train(SEQS, [], Stats.fit(SEQS), cfg, tmp_path / "m.pt", device="cpu", log=lambda m: None)
+    loaded = load_checkpoint(tmp_path / "m.pt", "cpu")[1]
+    assert (loaded.val_frac, loaded.test_frac, loaded.split_seed, loaded.holdout_sources) == (0.2, 0.3, 7, ("a", "b"))
