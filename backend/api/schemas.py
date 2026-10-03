@@ -7,6 +7,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.api.settings import MAX_DURATION_S, MAX_INLINE_POINTS, MAX_SEQUENCES
+from backend.motion.registry import MODEL_ID
 
 POINT_KEYS = ("timestamp", "x", "y", "z", "rx", "ry", "rz", "qx", "qy", "qz", "qw")
 
@@ -60,6 +61,12 @@ class SplineSpec(_Strict):
     min_clearance: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
 
 
+class MotionRef(_Strict):
+    """A trained human-motion model of ``$DVSIM_DATA_DIR/motion`` (GET /api/motion-models lists them)."""
+
+    model: str = Field(pattern=MODEL_ID.pattern)
+
+
 class StreetSpec(_Strict):
     type: Literal["street"]
     duration_s: float = Field(gt=0, le=MAX_DURATION_S)
@@ -69,6 +76,7 @@ class StreetSpec(_Strict):
     eye_height: Optional[float] = Field(default=None, gt=0, le=100, allow_inf_nan=False)
     edge_margin: Optional[float] = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
     min_clearance: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    motion: Optional[MotionRef] = None
 
 
 TrajectorySpec = Annotated[

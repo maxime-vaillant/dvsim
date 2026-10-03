@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from fastapi import HTTPException
@@ -11,7 +13,9 @@ from fastapi import HTTPException
 from backend.api.schemas import ImportedSpec, InlineSpec, JobCreate
 from backend.api.settings import MAX_RESOLUTION, MAX_STEPS
 from backend.api.stores import SceneStore, TrajectoryStore, clean_points
+from backend.api.util import NotFound
 from backend.config import SimConfig
+from backend.motion.registry import resolve_model
 
 
 @dataclass
@@ -65,8 +69,23 @@ def parse_config(raw: Dict[str, Any]) -> SimConfig:
     return config
 
 
+def _torch_available() -> bool:
+    return importlib.util.find_spec("torch") is not None
+
+
+def motion_file(model_id: str, data_dir: Path) -> Path:
+    """The checkpoint of a motion model id: 404 when there is none, 501 when this server cannot run it (no torch)."""
+    try:
+        path = resolve_model({"model": model_id}, data_dir)
+    except FileNotFoundError as exc:
+        raise NotFound(str(exc)) from None
+    if not _torch_available():
+        raise HTTPException(status_code=501, detail="human motion needs PyTorch on the server: pip install -e .[torch]")
+    return path
+
+
 def _trajectory(
-    spec: Any, trajectories: TrajectoryStore
+    spec: Any, trajectories: TrajectoryStore, data_dir: Path
 ) -> Tuple[Dict[str, Any], Dict[str, Any], float, int]:
     """(worker spec, public summary, duration of one sequence in s, number of sequences)."""
     if isinstance(spec, ImportedSpec):
@@ -85,14 +104,17 @@ def _trajectory(
         summary = {"type": "inline", "num_points": len(points), "origin": spec.origin}
         return worker, summary, (traj.end_us - traj.start_us) / 1e6, 1
     worker = spec.model_dump(exclude_none=True)
-    return worker, dict(worker), spec.duration_s, spec.count
+    summary = dict(worker)
+    if "motion" in worker:  # the worker has no data directory: it gets the file, the job JSON keeps the id
+        worker["motion"] = {"path": str(motion_file(worker["motion"]["model"], data_dir))}
+    return worker, summary, spec.duration_s, spec.count
 
 
-def plan_job(body: JobCreate, scenes: SceneStore, trajectories: TrajectoryStore) -> JobPlan:
+def plan_job(body: JobCreate, scenes: SceneStore, trajectories: TrajectoryStore, data_dir: Path) -> JobPlan:
     scene = scenes.spec(body.scene_id)
     scene_root = str(scenes.path(body.scene_id))
     config = parse_config(body.config)
-    worker, summary, duration_s, count = _trajectory(body.trajectory, trajectories)
+    worker, summary, duration_s, count = _trajectory(body.trajectory, trajectories, data_dir)
     steps = int(duration_s * 1e6 // config.dt_us) + 1
     if steps > MAX_STEPS:
         raise _invalid(f"too many simulation steps per sequence ({steps} > {MAX_STEPS}): raise dt_us or shorten it")

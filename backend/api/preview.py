@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import secrets
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from fastapi import HTTPException
 
+from backend.api.planner import motion_file
 from backend.api.schemas import TrajectoryGenerate
+from backend.api.settings import MAX_MOTION_PREVIEW_S
 from backend.api.stores import SceneStore
 
 
@@ -24,13 +27,21 @@ class TrajectoryPreviewer:
         self._scene = None
         self._cache: Dict[Any, Any] = {}
 
-    def generate(self, body: TrajectoryGenerate, scenes: SceneStore) -> Dict[str, Any]:
+    def generate(self, body: TrajectoryGenerate, scenes: SceneStore, data_dir: Path) -> Dict[str, Any]:
         from backend.pipeline import build_trajectories
         from backend.scene import load_scene
 
         spec_json = scenes.spec(body.scene_id)  # 404 before any work
         spec = body.trajectory.model_dump(exclude_none=True)
         spec.setdefault("seed", secrets.randbelow(2 ** 31))
+        if "motion" in spec and spec["duration_s"] * spec.get("count", 1) > MAX_MOTION_PREVIEW_S:
+            raise HTTPException(
+                status_code=422,
+                detail=f"previewing human-motion walks is limited to {MAX_MOTION_PREVIEW_S:g} s in total "
+                       "(duration x count): shorten it, or run a job")
+        built = dict(spec)  # what is generated; ``spec`` is what is returned (a motion model by its id)
+        if "motion" in built:
+            built["motion"] = {"path": str(motion_file(built["motion"]["model"], data_dir))}
         with self._lock:
             if self._scene_id != body.scene_id:
                 self._scene_id, self._scene, self._cache = None, None, {}
@@ -40,7 +51,7 @@ class TrajectoryPreviewer:
                     raise HTTPException(status_code=422, detail=f"cannot load the scene: {exc}") from None
                 self._scene_id = body.scene_id
             try:
-                trajs = build_trajectories(spec, self._scene, self._cache)
+                trajs = build_trajectories(built, self._scene, self._cache)
             except (ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=422, detail=f"cannot generate the trajectory: {exc}") from None
         return {

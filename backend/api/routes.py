@@ -14,6 +14,7 @@ from backend.api.jobs import TERMINAL, QueueFull
 from backend.api.planner import plan_job
 from backend.api.schemas import JobCreate, TrajectoryCreate, TrajectoryGenerate
 from backend.api.util import NotFound, UnsafePath, resolve_below
+from backend.motion.registry import list_models
 
 router = APIRouter(prefix="/api")
 
@@ -79,7 +80,12 @@ def create_trajectory(body: TrajectoryCreate, request: Request) -> Dict[str, Any
 @router.post("/trajectories/generate", summary="Generate trajectories on a scene without simulating them")
 async def generate_trajectories(body: TrajectoryGenerate, request: Request) -> Dict[str, Any]:
     state = request.app.state
-    return await run_in_threadpool(state.previewer.generate, body, state.scenes)
+    return await run_in_threadpool(state.previewer.generate, body, state.scenes, state.settings.data_dir)
+
+
+@router.get("/motion-models", summary="Trained human-motion models usable as the `motion` of a street trajectory")
+def motion_models(request: Request) -> List[Dict[str, Any]]:
+    return list_models(request.app.state.settings.data_dir)
 
 
 @router.get("/trajectories")
@@ -106,7 +112,7 @@ def delete_trajectory(trajectory_id: str, request: Request) -> Response:
 @router.post("/jobs", status_code=202, summary="Queue a simulation job")
 def create_job(body: JobCreate, request: Request) -> Dict[str, str]:
     state = request.app.state
-    plan = plan_job(body, state.scenes, state.trajectories)
+    plan = plan_job(body, state.scenes, state.trajectories, state.settings.data_dir)
     try:
         job_id = state.jobs.submit(plan)
     except QueueFull as exc:

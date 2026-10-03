@@ -12,6 +12,7 @@ MAX_INLINE_POINTS = 200_000       # points of one uploaded / inline trajectory
 MAX_SEQUENCES = 100               # `count` of a generated trajectory spec
 MAX_DURATION_S = 3600.0           # duration of a generated trajectory
 MAX_STEPS = 2_000_000             # simulation steps of one sequence
+MAX_MOTION_PREVIEW_S = 300.0      # seconds (duration x count) of human-motion walks one preview request may sample
 MAX_RESOLUTION = 8192             # camera width / height
 MAX_JSON_BYTES = 64 * 1024 * 1024  # body of every request except the scene upload
 
@@ -52,6 +53,10 @@ class Settings:
     @property
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
+
+    @property
+    def motion_dir(self) -> Path:
+        return self.data_dir / "motion"
 
     @classmethod
     def from_env(cls, data_dir: Optional[Path] = None) -> "Settings":

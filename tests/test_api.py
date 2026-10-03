@@ -1077,3 +1077,88 @@ def test_live_session_uses_and_follows_the_shared_origin(client, demo_scene):
         ws.send_json(_pose(3))
         _, seen = _recv_until(ws, lambda m: isinstance(m, tuple))
         assert not any(isinstance(m, dict) and m.get("type") == "origin" for m in seen)
+
+
+# ---- human motion models (backend.motion) ---------------------------------------------------------------------------
+STREET = {"type": "street", "duration_s": 3.0, "min_clearance": 0.5, "edge_margin": 0}
+
+
+def _install_motion_model(data_dir, checkpoint, name="tiny"):
+    folder = data_dir / "motion"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.pt").write_bytes(Path(checkpoint).read_bytes())
+
+
+def test_motion_models_are_listed(client, data_dir, motion_checkpoint):
+    assert client.get("/api/motion-models").json() == []
+    _install_motion_model(data_dir, motion_checkpoint)
+    (data_dir / "motion" / "readme.txt").write_text("not a model")
+    (listed,) = client.get("/api/motion-models").json()
+    assert listed["id"] == "tiny" and listed["size_bytes"] == Path(motion_checkpoint).stat().st_size
+
+
+def test_street_preview_with_a_motion_model(client, data_dir, demo_scene, motion_checkpoint):
+    _install_motion_model(data_dir, motion_checkpoint)
+    scene = _upload(client, demo_scene)["id"]
+    body = {"scene_id": scene, "trajectory": {**STREET, "seed": 5, "motion": {"model": "tiny"}}}
+    r = client.post("/api/trajectories/generate", json=body)
+    assert r.status_code == 200, r.text
+    first = r.json()
+    assert first["trajectory"]["motion"] == {"model": "tiny"} and first["seed"] == 5      # the id, never a server path
+    assert len(first["trajectories"][0]["points"]) == 151                                 # 3 s at 50 Hz
+    again = client.post("/api/trajectories/generate", json=body).json()
+    assert again["trajectories"] == first["trajectories"]                                 # same seed, same walk
+    plain = client.post("/api/trajectories/generate", json={**body, "trajectory": {**STREET, "seed": 5}}).json()
+    assert len(plain["trajectories"][0]["points"]) < 151                                  # the planner's own waypoints
+
+
+def test_motion_model_errors(client, data_dir, demo_scene, motion_checkpoint, monkeypatch):
+    scene = _upload(client, demo_scene)["id"]
+
+    def generate(motion):
+        return client.post("/api/trajectories/generate",
+                           json={"scene_id": scene, "trajectory": {**STREET, "motion": motion}})
+
+    r = generate({"model": "missing"})
+    assert r.status_code == 404 and "'missing' not found" in r.json()["detail"]
+    for bad in ({"model": "../etc/passwd"}, {"model": ""}, {"path": "/etc/passwd"}, {}, {"model": "a", "extra": 1}):
+        assert generate(bad).status_code == 422
+    r = client.post("/api/jobs", json={"scene_id": scene, "trajectory": {**STREET, "motion": {"model": "missing"}}})
+    assert r.status_code == 404 and client.get("/api/jobs").json() == []                  # nothing was queued
+    _install_motion_model(data_dir, motion_checkpoint)
+    monkeypatch.setattr("backend.api.planner._torch_available", lambda: False)
+    for r in (generate({"model": "tiny"}),
+              client.post("/api/jobs", json={"scene_id": scene, "trajectory": {**STREET, "motion": {"model": "tiny"}}})):
+        assert r.status_code == 501 and "pip install -e .[torch]" in r.json()["detail"]
+    assert client.post("/api/trajectories/generate",
+                       json={"scene_id": scene, "trajectory": {"type": "spline", "duration_s": 1, "motion": {"model": "tiny"}}}
+                       ).status_code == 422                                              # only street walks take motion
+
+
+def test_a_corrupt_motion_model_is_a_clean_error(client, data_dir, demo_scene):
+    (data_dir / "motion").mkdir(parents=True)
+    (data_dir / "motion" / "broken.pt").write_bytes(b"not a checkpoint")
+    scene = _upload(client, demo_scene)["id"]
+    r = client.post("/api/trajectories/generate",
+                    json={"scene_id": scene, "trajectory": {**STREET, "motion": {"model": "broken"}}})
+    assert r.status_code == 422 and "cannot read this file" in r.json()["detail"]
+
+
+def test_job_with_a_motion_model(client, data_dir, demo_scene, motion_checkpoint):
+    _install_motion_model(data_dir, motion_checkpoint)
+    scene = _upload(client, demo_scene)["id"]
+    job_id = _job(client, scene, {**STREET, "duration_s": 1.0, "seed": 2, "motion": {"model": "tiny"}})
+    job = _wait(client, job_id)
+    assert job["status"] == "done", job
+    assert job["trajectory"]["motion"] == {"model": "tiny"}                               # the job JSON keeps the id
+    request = json.loads((data_dir / "jobs" / job_id / "request.json").read_text())
+    assert request["trajectory"]["motion"] == {"path": str(data_dir / "motion" / "tiny.pt")}   # the worker gets the file
+    assert job["progress"]["total_steps"] == 101                                          # 1 s at 10 ms
+
+
+def test_a_long_motion_preview_is_refused(client, demo_scene):
+    scene = _upload(client, demo_scene)["id"]
+    for duration, count in ((301.0, 1), (100.0, 4)):
+        r = client.post("/api/trajectories/generate", json={
+            "scene_id": scene, "trajectory": {**STREET, "duration_s": duration, "count": count, "motion": {"model": "any"}}})
+        assert r.status_code == 422 and "limited to 300 s in total" in r.json()["detail"]
