@@ -101,8 +101,11 @@ export function addTrajectoryOptions(folder) {
         if (THREE_VARIABLES.settings.trajectoryType === 'Generated') showGeneratedPaths();
     };
 
-    [kind, duration, count, keyPoints, seed].forEach(controller => controller.onChange(onGeneratorSettingChange));
-    kind.onChange(() => { if (sim.genKind === 'street') refreshMotionModels(); });
+    [duration, count, keyPoints, seed].forEach(controller => controller.onChange(onGeneratorSettingChange));
+    kind.onChange(() => {
+        onGeneratorSettingChange();
+        if (sim.genKind === 'street') refreshMotionModels();
+    });
     motion.onChange(onGeneratorSettingChange);
 
     // lil-gui rebuilds a dropdown to change its options: the new one is put back before "Preview paths".
