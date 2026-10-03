@@ -104,11 +104,13 @@ def _build_one(spec: Dict[str, Any], scene: Optional[Scene], cache: Dict[Any, An
 
 
 def _motion_style(motion: Dict[str, Any], cache: Dict[Any, Any]):
-    """The loaded motion model a ``motion`` spec names (kept in ``cache``: loading is the slow part)."""
+    """The loaded motion model a ``motion`` spec names (kept in ``cache``: loading is the slow part). The key includes
+    the file's modification time and size, so a model retrained under the same name is loaded again."""
     from backend.motion.registry import resolve_model
 
     path = resolve_model(motion)
-    key = ("motion", str(path.resolve()))
+    st = path.stat()
+    key = ("motion", str(path.resolve()), st.st_mtime_ns, st.st_size)
     style = cache.get(key)
     if style is None:
         from backend.motion.style import DiffusionMotionStyle  # imports torch: fails with an install hint without it

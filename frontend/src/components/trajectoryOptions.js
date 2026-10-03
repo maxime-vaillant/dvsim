@@ -87,8 +87,10 @@ export function addTrajectoryOptions(folder) {
     const count = folder.add(sim, 'genCount', 1, 100, 1).name('Sequences');
     const keyPoints = folder.add(sim, 'genKeyPoints', 2, 20, 1).name('Key points');
     const seed = folder.add(sim, 'genSeed').name('Seed (empty = random)');
-    // Street walks can be played by a trained human-motion model; the list comes from the server.
+    // Street walks can be played by a trained human-motion model; the list comes from the server, and the dropdown
+    // is shown only once it lists at least one model.
     let motion = folder.add(sim, 'genMotion', motionOptions([])).name('Human motion');
+    let motionModelCount = 0;
     const preview = folder.add(actions, 'previewPaths').name('Preview paths');
     const pathToPlay = folder.add(actions, 'pathToPlay', 1, 2, 1).name('Path to play').onChange(selectPath);
     const generated = [kind, duration, count, seed, preview];
@@ -115,9 +117,10 @@ export function addTrajectoryOptions(folder) {
         try {
             models = await listMotionModels();
         } catch (error) {
-            return; // no server (or an old one): the dropdown keeps offering the planner's glide only
+            models = []; // no server (or an old one): the planner's glide only, and no dropdown
         }
 
+        motionModelCount = models.length;
         if (!models.some(model => model.id === sim.genMotion)) sim.genMotion = NO_MOTION;
 
         motion = motion.options(motionOptions(models));
@@ -186,7 +189,7 @@ export function addTrajectoryOptions(folder) {
         heading.updateDisplay();
         generated.forEach(controller => controller.show(type === 'Generated'));
         keyPoints.show(type === 'Generated' && sim.genKind === 'spline');
-        motion.show(type === 'Generated' && sim.genKind === 'street');
+        motion.show(type === 'Generated' && sim.genKind === 'street' && motionModelCount > 0);
         pathToPlay.show(type === 'Generated' && THREE_VARIABLES.generatedPaths.length > 1);
     }
 

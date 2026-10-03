@@ -800,6 +800,32 @@ def test_street_spec_with_motion_replaces_the_glide(motion_checkpoint):
         assert not np.allclose(h.quats[:, 2], p.quats[0, 2])                       # it rolls: the glide did not
 
 
+def test_a_retrained_motion_model_replaces_the_cached_one(motion_checkpoint, tmp_path):
+    import os
+    import shutil
+
+    torch = pytest.importorskip("torch")
+    from backend.pipeline import build_trajectories
+
+    class SceneLike:
+        def to_trimesh(self):
+            return make_town()
+
+    model = tmp_path / "walk.pt"
+    shutil.copyfile(motion_checkpoint, model)
+    spec = {"type": "street", "duration_s": 4.0, "seed": 3, "speed": 1.3, "motion": {"path": str(model)}}
+    cache = {}
+    (first,) = build_trajectories(spec, SceneLike(), cache)
+    ckpt = torch.load(model, weights_only=True)                               # "retrained" under the same name
+    ckpt["state_dict"] = {k: v * 0.5 if v.is_floating_point() else v for k, v in ckpt["state_dict"].items()}
+    torch.save(ckpt, model)
+    st = model.stat()
+    os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    (second,) = build_trajectories(spec, SceneLike(), cache)
+    assert sum(k[0] == "motion" for k in cache if isinstance(k, tuple)) == 2
+    assert not np.allclose(first.positions, second.positions)                 # the new weights were used
+
+
 def test_motion_errors_are_specific(tmp_path, monkeypatch):
     import sys
 
