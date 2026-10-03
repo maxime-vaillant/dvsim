@@ -63,6 +63,20 @@ def _classifier_features(w: np.ndarray) -> np.ndarray:
     return np.concatenate([log_psd(w).reshape(len(w), -1), np.log(w.std(axis=1) + _FLOOR)], axis=1)
 
 
+def _parity_by_recording(real: Seq[Sequence]) -> List[int]:
+    """(n,) parity per sequence: recordings with the same key share a parity, distinct recordings alternate 0/1."""
+    seen_keys = {}
+    parity_list = []
+    next_parity = 0
+    for seq in real:
+        key = recording_key(seq)
+        if key not in seen_keys:
+            seen_keys[key] = next_parity
+            next_parity = 1 - next_parity
+        parity_list.append(seen_keys[key])
+    return parity_list
+
+
 def _logistic_loss(wb: np.ndarray, x: np.ndarray, y: np.ndarray) -> float:
     z = x @ wb[:-1] + wb[-1]
     return float(np.mean(np.logaddexp(0, z) - y * z) + 1e-2 * wb[:-1] @ wb[:-1])
@@ -95,6 +109,7 @@ def compare(real: Seq[Sequence], generated: Seq[np.ndarray]) -> List[dict]:
     (even-numbered against odd-numbered real recordings: the noise floor, the best that can be expected)."""
     if len(real) != len(generated):
         raise ValueError(f"{len(real)} real sequences but {len(generated)} generated")
+    rec_parity = _parity_by_recording(real)
     w_real, w_gen, speed, parity = [], [], [], []
     for i, (seq, gen) in enumerate(zip(real, generated)):
         w, sp = windows(seq.residual, seq.cond[:, 0])
@@ -102,7 +117,7 @@ def compare(real: Seq[Sequence], generated: Seq[np.ndarray]) -> List[dict]:
         w_real.append(w)
         w_gen.append(g)
         speed.append(sp)
-        parity.append(np.full(len(w), i % 2))
+        parity.append(np.full(len(w), rec_parity[i]))
     r_all, g_all = np.concatenate(w_real), np.concatenate(w_gen)
     speed, parity = np.concatenate(speed), np.concatenate(parity)
     if len(r_all) == 0:

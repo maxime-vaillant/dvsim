@@ -72,6 +72,24 @@ def test_inputs_are_checked(runs):
         compare([short], [np.zeros((100, 6))])
 
 
+def test_parity_by_recording():
+    from backend.motion.evaluate import _parity_by_recording
+
+    seqs = [
+        Sequence("s", "a#0", np.zeros((200, 6)), np.ones((200, 3))),
+        Sequence("s", "a#1", np.zeros((200, 6)), np.ones((200, 3))),
+        Sequence("s", "b#0", np.zeros((200, 6)), np.ones((200, 3))),
+        Sequence("s", "c#0", np.zeros((200, 6)), np.ones((200, 3))),
+        Sequence("s", "c#1", np.zeros((200, 6)), np.ones((200, 3))),
+    ]
+    parities = _parity_by_recording(seqs)
+    assert parities == [0, 0, 1, 0, 0], f"expected [0, 0, 1, 0, 0] but got {parities}"
+    assert parities[0] == parities[1], "a#0 and a#1 must share parity"
+    assert parities[3] == parities[4], "c#0 and c#1 must share parity"
+    assert parities[0] != parities[2], "a and b must have different parities"
+    assert parities[2] != parities[3], "b and c must have different parities"
+
+
 def test_held_out_recordings_are_replayed_and_compared(motion_checkpoint):
     from motion_helpers import synthetic_walk
 
