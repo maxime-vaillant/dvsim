@@ -1,7 +1,8 @@
-"""`dvsim` command line: demo, run, sample-scene, serve, info."""
+"""`dvsim` command line: demo, run, sample-scene, serve, info, motion-import, motion-train, motion-eval."""
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -9,6 +10,10 @@ from pathlib import Path
 from typing import List, Optional
 
 from backend.config import GT_FIELDS, SimConfig
+
+
+# backend.motion.importers.FORMATS, spelled out here so that `dvsim --help` does not import the motion package
+MOTION_FORMATS = ("tum", "aria", "headset", "csv")
 
 
 def _add_sim_args(p: argparse.ArgumentParser) -> None:
@@ -77,12 +82,113 @@ def _cmd_run(a: argparse.Namespace) -> int:
         if a.generate == "street":
             del traj["n_key_points"]
             traj.update(speed=a.walk_speed, eye_height=a.eye_height, edge_margin=a.edge_margin)
+            if a.motion:
+                traj["motion"] = _motion_ref(a.motion)
+        elif a.motion:
+            print("error: --motion needs --generate street", file=sys.stderr)
+            return 2
     dirs = run_to_disk(
         _scene_spec(a.scene, a.texture), traj, _config_from_args(a), a.out,
         visualize=a.visualize, compression=a.compression, prefix=a.prefix, show_bar=True,
     )
     for d in dirs:
         print(d)
+    return 0
+
+
+def _reports_errors(func):
+    """Commands that read user files and models: a bad input is an `error:` line and exit code 1, not a traceback."""
+    @functools.wraps(func)
+    def run(a: argparse.Namespace) -> int:
+        try:
+            return func(a)
+        except (ImportError, FileNotFoundError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    return run
+
+
+def _motion_ref(value: str) -> dict:
+    """A trained model given as a file (``walk.pt``, any path) or as the id of one in $DVSIM_DATA_DIR/motion."""
+    path = Path(value)
+    return {"path": str(path)} if path.suffix == ".pt" or path.exists() else {"model": value}
+
+
+@_reports_errors
+def _cmd_motion_import(a: argparse.Namespace) -> int:
+    from backend.motion.corpus import import_source, load_corpus, save_corpus
+
+    tracks, report = import_source(a.name, a.path, a.format, a.layout, a.up, a.camera)
+    print(f"{a.name}: {report.files} file(s), {report.segments} segment(s), {report.hours:.2f} h, "
+          f"heading agreement {report.agreement:.2f}")
+    for warning in report.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if not tracks:
+        print("error: nothing to import", file=sys.stderr)
+        return 1
+    kept = [t for t in load_corpus(a.out) if t.source != a.name] if a.out.exists() else []
+    save_corpus(a.out, kept + tracks)
+    print(f"{a.out}: {len(kept) + len(tracks)} segment(s) from {len({t.source for t in kept + tracks})} source(s)")
+    return 0
+
+
+def _model_path(name: Optional[str], out: Optional[Path]) -> Path:
+    from backend.motion.registry import SUFFIX, models_dir
+
+    if bool(name) == bool(out):
+        raise SystemExit("error: give either --name ID (stored in $DVSIM_DATA_DIR/motion) or --out FILE")
+    if out:
+        return out
+    folder = models_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{name}{SUFFIX}"
+
+
+@_reports_errors
+def _cmd_motion_train(a: argparse.Namespace) -> int:
+    from backend.motion.corpus import load_corpus
+    from backend.motion.dataset import Stats, assign_splits, build_sequences, select
+    from backend.motion.train import TrainConfig, train
+
+    out = _model_path(a.name, a.out)
+    seqs = build_sequences(load_corpus(a.corpus))
+    cfg = TrainConfig(
+        steps=a.steps, batch=a.batch, lr=a.lr, base=a.base, mults=tuple(a.mults), diffusion_steps=a.diffusion_steps,
+        seed=a.seed, val_frac=a.val_frac, test_frac=a.test_frac, split_seed=a.seed,
+        holdout_sources=tuple(a.holdout_source or ()),
+    )
+    splits = assign_splits(seqs, cfg.val_frac, cfg.test_frac, cfg.split_seed, cfg.holdout_sources)
+    train_seqs, val_seqs = select(seqs, splits, "train"), select(seqs, splits, "val")
+    if not train_seqs:
+        print("error: no training recording left after the split", file=sys.stderr)
+        return 1
+    print(f"{len(train_seqs)} training, {len(val_seqs)} validation, {len(select(seqs, splits, 'test'))} held-out "
+          f"segment(s)")
+    train(train_seqs, val_seqs, Stats.fit(train_seqs), cfg, out, device=a.device, init=a.init)
+    print(out)
+    return 0
+
+
+@_reports_errors
+def _cmd_motion_eval(a: argparse.Namespace) -> int:
+    from backend.motion.corpus import load_corpus
+    from backend.motion.evaluate import evaluate_model, format_report
+    from backend.motion.registry import resolve_model
+    from backend.motion.style import DiffusionMotionStyle
+
+    style = DiffusionMotionStyle.load(resolve_model(_motion_ref(a.model)), device=a.device, sample_steps=a.sample_steps)
+    report = evaluate_model(style, load_corpus(a.corpus), a.max_sequences, a.seed)
+    print(format_report(report))
+    if a.scene:
+        from backend.motion.events_report import compare_event_statistics, format_event_report
+        from backend.scene import load_scene
+
+        street = {"duration_s": a.events_duration, "seed": a.seed}
+        for key in ("min_clearance", "edge_margin"):
+            if getattr(a, key) is not None:
+                street[key] = getattr(a, key)
+        print("\nevents on the scene (same planned walk, without and with the model):")
+        print(format_event_report(compare_event_statistics(load_scene(a.scene), _motion_ref(a.model), street)))
     return 0
 
 
@@ -177,6 +283,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--edge-margin", type=float, default=None,
         help="street: keep walks this far from where the scene ends, m (default 5; 0 to walk up to the edge)",
     )
+    p.add_argument(
+        "--motion", metavar="MODEL",
+        help="street: walk like a person: a trained model (file.pt, or the id of one in $DVSIM_DATA_DIR/motion)",
+    )
     p.add_argument("--out", required=True, type=Path)
     p.add_argument("--prefix", default="seq")
     p.add_argument("--visualize", action="store_true", help="also write mp4 previews")
@@ -198,6 +308,47 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     p = sub.add_parser("info", help="check the installation (OpenGL context)")
     p.set_defaults(func=_cmd_info)
+
+    p = sub.add_parser("motion-import", help="add a dataset of human trajectories to a corpus file")
+    p.add_argument("name", help="source name (re-importing a name replaces that source)")
+    p.add_argument("format", choices=MOTION_FORMATS)
+    p.add_argument("path", type=Path, help="a trajectory file, or a folder searched recursively")
+    p.add_argument("--out", type=Path, default=Path("corpus.npz"))
+    p.add_argument("--layout", default="tumvi", help="csv: column layout (tumvi | dvsim)")
+    p.add_argument("--up", nargs=3, type=float, metavar=("X", "Y", "Z"), help="up direction of the dataset's world")
+    p.add_argument("--camera", choices=["opengl", "opencv"], help="camera axes (opencv: Y down, looks along +Z)")
+    p.set_defaults(func=_cmd_motion_import)
+
+    p = sub.add_parser("motion-train", help="train a human-motion model on a corpus (needs torch)")
+    p.add_argument("--corpus", required=True, type=Path)
+    p.add_argument("--name", help="model id: stored as $DVSIM_DATA_DIR/motion/<id>.pt (what the API lists)")
+    p.add_argument("--out", type=Path, help="checkpoint file (instead of --name)")
+    p.add_argument("--init", help="continue from this checkpoint (same --base / --mults)")
+    p.add_argument("--steps", type=int, default=20000)
+    p.add_argument("--batch", type=int, default=64)
+    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--base", type=int, default=64, help="U-Net width (a multiple of 8)")
+    p.add_argument("--mults", nargs="+", type=int, default=[1, 2, 4], help="U-Net width multipliers per level")
+    p.add_argument("--diffusion-steps", type=int, default=1000)
+    p.add_argument("--seed", type=int, default=0, help="training and split seed")
+    p.add_argument("--val-frac", type=float, default=0.1)
+    p.add_argument("--test-frac", type=float, default=0.1)
+    p.add_argument("--holdout-source", action="append", help="keep every recording of this source for evaluation")
+    p.add_argument("--device", help="cuda | mps | cpu (default: the best available)")
+    p.set_defaults(func=_cmd_motion_train)
+
+    p = sub.add_parser("motion-eval", help="compare a model's motion with held-out real motion (needs torch)")
+    p.add_argument("--corpus", required=True, type=Path)
+    p.add_argument("--model", required=True, help="file.pt, or a model id")
+    p.add_argument("--scene", help="also simulate this scene (.obj/.glb/.json) to compare event statistics")
+    p.add_argument("--events-duration", type=float, default=10.0, help="seconds of walk for the event comparison")
+    p.add_argument("--min-clearance", type=float, help="street walk of the event comparison, as in `run`")
+    p.add_argument("--edge-margin", type=float, help="street walk of the event comparison, as in `run`")
+    p.add_argument("--max-sequences", type=int, default=0, help="evaluate at most this many held-out segments")
+    p.add_argument("--sample-steps", type=int, default=50)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--device")
+    p.set_defaults(func=_cmd_motion_eval)
 
     args = parser.parse_args(argv)
     return args.func(args)
