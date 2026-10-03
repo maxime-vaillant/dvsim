@@ -17,7 +17,7 @@ def walk(n=1000, speed=1.4, bob=0.03, roll=0.05, turn=0.0):
                     1.6 + bob * np.sin(2 * np.pi * 2.0 * t),
                     np.cumsum(-np.cos(psi) * speed) / 50.0], axis=1)
     rolls = np.stack([0 * t, 0 * t, roll * np.sin(2 * np.pi * 1.0 * t)], axis=1)
-    return pos, (Rotation.from_euler("y", psi) * Rotation.from_rotvec(rolls)).as_quat()
+    return pos, (Rotation.from_euler("y", psi[:, None]) * Rotation.from_rotvec(rolls)).as_quat()
 
 
 def test_split_then_compose_gives_the_track_back():

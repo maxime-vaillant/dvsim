@@ -65,7 +65,7 @@ def extract_path(positions, rate_hz: float = RATE_HZ, cutoff_hz: float = CUTOFF_
         idx[idx < 0] = first                  # ... and back-fill the start
         h = v[idx] / speed[idx][:, None]
     psi = np.unwrap(np.arctan2(-h[:, 0], -h[:, 1]))   # forward = (-sin psi, 0, -cos psi)
-    rot = Rotation.from_euler("y", psi)
+    rot = Rotation.from_euler("y", psi[:, None])   # one column: scipy >= 1.15 insists on (N, n_axes)
     yaw_rate = np.gradient(psi, 1.0 / rate_hz)
     held = ~valid
     near = held.copy()                        # the held span and one sample each side: the heading jumps there

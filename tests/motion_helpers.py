@@ -22,7 +22,7 @@ def synthetic_walk(seed: int, n: int = 1500, source: str = "syn") -> Track:
     sway = 0.02 * np.sin(phase)
     pos = np.stack([x, y, z], axis=1) + np.stack([-sway * np.cos(psi), 0 * t, sway * np.sin(psi)], axis=1)
     wobble = np.stack([0.02 * np.sin(2 * phase), 0.05 * np.sin(phase), 0.03 * np.sin(phase)], axis=1)
-    rot = Rotation.from_euler("y", psi) * Rotation.from_rotvec(wobble)
+    rot = Rotation.from_euler("y", psi[:, None]) * Rotation.from_rotvec(wobble)
     return Track(source, f"walk{seed}", (np.arange(n) * DT_US).astype(np.int64), pos, rot.as_quat())
 
 
@@ -52,5 +52,5 @@ def stop_and_turn(speed: float = 1.4) -> Track:
     n = len(v)
     pos = np.stack([np.zeros(n), np.full(n, 1.6), z], axis=1)
     psi = np.where(np.arange(n) < 450, 0.0, np.pi)
-    quats = Rotation.from_euler("y", psi).as_quat()
+    quats = Rotation.from_euler("y", psi[:, None]).as_quat()
     return Track("syn", "turn", (np.arange(n) * DT_US).astype(np.int64), pos, quats)

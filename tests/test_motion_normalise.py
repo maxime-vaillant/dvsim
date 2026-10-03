@@ -66,7 +66,7 @@ def test_short_segments_are_dropped():
 def test_resampling_interpolates_position_linearly_and_orientation_by_slerp():
     t = np.array([0, 10_000_000], dtype=np.int64)
     pos = np.array([[0.0, 1.0, 0.0], [14.0, 1.0, 0.0]])
-    q = Rotation.from_euler("y", [0.0, 90.0], degrees=True).as_quat()
+    q = Rotation.from_euler("y", [[0.0], [90.0]], degrees=True).as_quat()
     (track,) = normalise(RawTrack("r", t, pos, q), "x", max_gap_s=20.0)
     assert len(track) == 501
     mid = len(track) // 2
