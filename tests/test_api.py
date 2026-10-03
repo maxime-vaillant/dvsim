@@ -1144,6 +1144,18 @@ def test_a_corrupt_motion_model_is_a_clean_error(client, data_dir, demo_scene):
     assert r.status_code == 422 and "cannot read this file" in r.json()["detail"]
 
 
+def test_an_incomplete_motion_model_is_a_clean_error(client, data_dir, demo_scene, motion_checkpoint):
+    torch = pytest.importorskip("torch")
+    ckpt = torch.load(motion_checkpoint, weights_only=True)
+    del ckpt["stats"]                                                     # right version, missing contents
+    (data_dir / "motion").mkdir(parents=True)
+    torch.save(ckpt, data_dir / "motion" / "partial.pt")
+    scene = _upload(client, demo_scene)["id"]
+    r = client.post("/api/trajectories/generate",
+                    json={"scene_id": scene, "trajectory": {**STREET, "motion": {"model": "partial"}}})
+    assert r.status_code == 422 and "checkpoint is incomplete" in r.json()["detail"]
+
+
 def test_job_with_a_motion_model(client, data_dir, demo_scene, motion_checkpoint):
     _install_motion_model(data_dir, motion_checkpoint)
     scene = _upload(client, demo_scene)["id"]

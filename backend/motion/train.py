@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence as Seq
 
 import numpy as np
@@ -61,14 +64,23 @@ def _batch(sampler: WindowSampler, rng, size: int, device, ctx_prob: float):
 
 
 def save_checkpoint(path, model, cfg: TrainConfig, stats: Stats, sources: Seq[str], step: int) -> None:
-    torch.save({
-        "version": CHECKPOINT_VERSION,
-        "config": json.dumps(asdict(cfg)),
-        "stats": json.dumps(stats.to_dict()),
-        "sources": json.dumps(sorted(set(sources))),
-        "step": int(step),
-        "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
-    }, path)
+    """Written to a temporary file of the same folder, then renamed: ``path`` is never a half-written checkpoint."""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    os.close(fd)
+    try:
+        torch.save({
+            "version": CHECKPOINT_VERSION,
+            "config": json.dumps(asdict(cfg)),
+            "stats": json.dumps(stats.to_dict()),
+            "sources": json.dumps(sorted(set(sources))),
+            "step": int(step),
+            "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+        }, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def load_checkpoint(path, device=None):
@@ -80,53 +92,73 @@ def load_checkpoint(path, device=None):
     if not isinstance(ckpt, dict) or ckpt.get("version") != CHECKPOINT_VERSION:
         found = ckpt.get("version") if isinstance(ckpt, dict) else type(ckpt).__name__
         raise ValueError(f"{path}: not a {CHECKPOINT_VERSION} checkpoint (found {found!r})")
-    raw = json.loads(ckpt["config"])
-    cfg = TrainConfig(**{**raw, "mults": tuple(raw["mults"]), "holdout_sources": tuple(raw.get("holdout_sources", ()))})
-    model = MotionUNet(cfg.base, cfg.mults)
-    model.load_state_dict(ckpt["state_dict"])
+    try:
+        raw = json.loads(ckpt["config"])
+        cfg = TrainConfig(**{**raw, "mults": tuple(raw["mults"]),
+                             "holdout_sources": tuple(raw.get("holdout_sources", ()))})
+        stats, sources = Stats.from_dict(json.loads(ckpt["stats"])), json.loads(ckpt["sources"])
+        model = MotionUNet(cfg.base, cfg.mults)
+        model.load_state_dict(ckpt["state_dict"])
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError(f"{path}: the checkpoint is incomplete or does not match its own configuration "
+                         f"({exc})") from None
     model.to(device or pick_device()).eval()
-    return model, cfg, Stats.from_dict(json.loads(ckpt["stats"])), json.loads(ckpt["sources"])
+    return model, cfg, stats, sources
 
 
 def train(train_seqs: Seq[Sequence], val_seqs: Seq[Sequence], stats: Stats, cfg: TrainConfig, out_path,
           device=None, init: Optional[str] = None, log: Callable[[str], None] = print) -> List[Dict[str, float]]:
-    """Train and save the EMA weights to ``out_path``. Returns the validation history [{step, val_loss}]."""
+    """Train and save the EMA weights to ``out_path`` at every validation and when interrupted. With ``init`` the
+    training continues from that checkpoint, in its normalisation (``stats`` is then ignored). Returns the
+    validation history [{step, val_loss}]."""
     device = pick_device(device) if not isinstance(device, torch.device) else device
     rng = np.random.default_rng(cfg.seed)
     gen = torch.Generator().manual_seed(cfg.seed)
     torch.manual_seed(cfg.seed)
-    sampler = WindowSampler(train_seqs, stats, hop=cfg.hop)
-    val_sampler = WindowSampler(val_seqs, stats, hop=cfg.hop) if val_seqs else None
-    model = MotionUNet(cfg.base, cfg.mults).to(device)
+    prev = None
     if init:
-        prev, prev_cfg, _, _ = load_checkpoint(init, device)
+        prev, prev_cfg, stats, _ = load_checkpoint(init, device)
         if (prev_cfg.base, prev_cfg.mults) != (cfg.base, cfg.mults):
             raise ValueError(f"--init model has base={prev_cfg.base} mults={prev_cfg.mults}, "
                              f"expected {cfg.base} {cfg.mults}")
+        log("--init: training in the normalisation of the initial model (its statistics replace the corpus')")
+    sampler = WindowSampler(train_seqs, stats, hop=cfg.hop)
+    val_sampler = WindowSampler(val_seqs, stats, hop=cfg.hop) if val_seqs else None
+    model = MotionUNet(cfg.base, cfg.mults).to(device)
+    if prev is not None:
         model.load_state_dict(prev.state_dict())
     ema = copy.deepcopy(model).eval()
     diff = Diffusion(cfg.diffusion_steps)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
     history: List[Dict[str, float]] = []
     run = 0.0
-    for step in range(1, cfg.steps + 1):
-        x0, cond, use_ctx = _batch(sampler, rng, cfg.batch, device, cfg.ctx_prob)
-        loss = diff.loss(model, x0, cond, use_ctx, gen)
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
-        _ema_update(ema, model, min(cfg.ema, (1 + step) / (10 + step)))
-        run = loss.item() if step == 1 else 0.98 * run + 0.02 * loss.item()
-        if step % cfg.val_every == 0 or step == cfg.steps:
-            msg = f"step {step}/{cfg.steps} train {run:.4f}"
-            if val_sampler is not None:
-                vrng, vgen = np.random.default_rng(1), torch.Generator().manual_seed(1)
-                with torch.no_grad():
-                    v = np.mean([diff.loss(ema, *_batch(val_sampler, vrng, cfg.batch, device, 0.5), vgen).item()
-                                 for _ in range(cfg.val_batches)])
-                history.append({"step": step, "val_loss": float(v)})
-                msg += f" val {v:.4f}"
-            log(msg)
-    save_checkpoint(out_path, ema, cfg, stats, [s.source for s in train_seqs], cfg.steps)
+    done = 0                                     # the last step whose update reached the EMA weights
+    sources = [s.source for s in train_seqs]
+    try:
+        for step in range(1, cfg.steps + 1):
+            x0, cond, use_ctx = _batch(sampler, rng, cfg.batch, device, cfg.ctx_prob)
+            loss = diff.loss(model, x0, cond, use_ctx, gen)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            _ema_update(ema, model, min(cfg.ema, (1 + step) / (10 + step)))
+            done = step
+            run = loss.item() if step == 1 else 0.98 * run + 0.02 * loss.item()
+            if step % cfg.val_every == 0 or step == cfg.steps:
+                msg = f"step {step}/{cfg.steps} train {run:.4f}"
+                if val_sampler is not None:
+                    vrng, vgen = np.random.default_rng(1), torch.Generator().manual_seed(1)
+                    with torch.no_grad():
+                        v = np.mean([diff.loss(ema, *_batch(val_sampler, vrng, cfg.batch, device, 0.5), vgen).item()
+                                     for _ in range(cfg.val_batches)])
+                    history.append({"step": step, "val_loss": float(v)})
+                    msg += f" val {v:.4f}"
+                log(msg)
+                save_checkpoint(out_path, ema, cfg, stats, sources, step)
+    except KeyboardInterrupt:
+        save_checkpoint(out_path, ema, cfg, stats, sources, done)
+        raise
+    if done == 0:                                # steps=0: the initial weights, as before
+        save_checkpoint(out_path, ema, cfg, stats, sources, 0)
     return history
