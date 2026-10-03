@@ -3,6 +3,27 @@
 All notable changes to DVSim. Versions follow [Semantic Versioning](https://semver.org/) (0.x: the interfaces may
 still change between minor versions).
 
+## [0.3.0] - Unreleased
+
+Human-like camera motion: learn how people move from recorded trajectories and replay it on planned walks.
+
+### Added
+- `backend/motion`: importers for TUM RGB-D, TUM-VI (csv), Project Aria / ADT and DVSim headset trajectories, a
+  common 50 Hz track format in DVSim's frame with a heading-agreement check that catches a wrong camera or up-axis
+  convention, and a split of every track into a smooth path and a human-motion residual.
+- A small conditional 1D diffusion model (x0-prediction, DDIM sampling) of that residual, conditioned on the path's
+  speed, yaw rate and curvature; long clips are generated window by window, each given the last second of the
+  previous one. Optional dependency: `pip install -e ".[torch]"`.
+- `motion` field on `street` trajectory specs (API, `pipeline.build_trajectories`) and `dvsim run --motion MODEL`:
+  the planner's path walked with sampled human head motion, reproducible from the seed.
+- `dvsim motion-import`, `motion-train` and `motion-eval` (spectra, step frequency, acceleration / jerk distributions
+  and a real-vs-generated classifier on held-out recordings, next to the plain-walk baseline; `--scene` adds an
+  event-rate and optical-flow comparison).
+- `GET /api/motion-models` and a "Human motion" selector in the web interface.
+
+### Changed
+- Checkpoints hold tensors and plain data only and are loaded with `weights_only=True`.
+
 ## [0.2.0] - 2026-10-02
 
 Rewrite of the first prototype into an installable package with a CLI, a web API and a dataloader.

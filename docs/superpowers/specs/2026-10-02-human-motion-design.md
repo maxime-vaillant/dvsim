@@ -139,3 +139,17 @@ above a threshold at window seams; out-of-range speed clamps and warns.
 API: a spec with `motion` validates; unknown id returns 404; torch missing returns the install hint.
 
 The existing test suite stays unchanged and passing.
+
+## Implementation notes
+
+Differences from the text above found while planning and building (see the plan's "Spec notes"):
+
+1. The residual's position axes are the path frame's own (x right, y up, z back).
+2. `motion-import` writes a corpus file read by `motion-train` / `motion-eval`; `--up` and `--camera` override a dataset's frame.
+3. Imports report a heading agreement and warn below 0.5 (wrong frame convention).
+4. Windows whose mean path speed is below 0.2 m/s are not trained on.
+5. The path low-pass extends the signal by point reflection at both ends.
+6. `TrainConfig` stores the split settings; `motion-eval` recomputes the held-out recordings from them.
+7. The "real vs real" reference compares even- with odd-numbered held-out recordings.
+8. API: 404 unknown model id, 501 no torch, 422 for a motion preview over 300 s in total.
+9. TUM-VI is read through the generic `csv` importer (layout `tumvi`), not the `tum` text importer.

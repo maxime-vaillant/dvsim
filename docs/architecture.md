@@ -42,12 +42,13 @@ backend/
   pipeline.py          build_trajectories(...), run_to_disk(...) used by the CLI and the API worker
   event_processing/    EventSimulator (vectorised numpy; noise/mismatch options)
   trajectories/        WaypointTrajectory, JSON loader, generators, FreeSpaceGrid
+  motion/              learned human camera motion: importers, path/residual split, diffusion model, training, style (torch only in model/train/style)
   saving/              streaming HDF5 writers, TUM export, SequenceOutput
   vizualisation/       streaming video sinks
   samples/             procedural demo scene + trajectory (`backend.samples.create_demo_scene`)
   api/                 FastAPI app, job manager (spawned worker processes), static frontend; see api/__init__.py
   dataloader/          ClipStream (numpy) + torch IterableDataset; see dataloader/__init__.py for the training-loop example
-  cli.py, __main__.py  `dvsim` command line (demo / run / sample-scene / serve / info)
+  cli.py, __main__.py  `dvsim` command line (demo / run / sample-scene / serve / info / motion-import / motion-train / motion-eval)
   (compute.py removed: its hard-coded __main__ is replaced by the CLI; old version is in refs/backup/pre-dvsim-refactor)
 frontend/              three.js previewer + simulation control panel (frontend/README.md)
 tests/                 pytest, one file per module (243 backend tests + 64 API tests + dataloader tests)
@@ -108,6 +109,27 @@ class FreeSpaceGrid: ...                        # voxel free-space / clearance g
 class RectilinearTrajectoryGenerator(mesh, ...).generate(duration_us, rng) -> WaypointTrajectory
 class SplineTrajectoryGenerator(mesh, ...).generate(duration_us, n_key_points, rng) -> WaypointTrajectory
 
+# backend/motion   (only model.py, train.py, style.py import torch; `backend.motion.require_torch()` raises with the install hint)
+RATE_HZ = 50; DT_US = 20_000
+class RawTrack(name, times_us, positions, quats, frame: FrameSpec)   # a recording in its dataset's own frame
+class FrameSpec(up=(x, y, z) of the dataset's world, camera="opengl"|"opencv")
+class Track(source, name, times_us, positions, quats)                # one segment at RATE_HZ in DVSim's frame (+Y up, camera -Z)
+importers.read(path, fmt, layout="tumvi", up=None, camera=None) -> [RawTrack]      # fmt: tum | aria | headset | csv
+normalise.normalise(raw, source, max_gap_s=0.2, min_duration_s=4.0) -> [Track]    # frame, gaps, 50 Hz resampling
+decompose.split(positions, quats) -> (PathFrame, residual (N, 6))    # THE definition of path / residual, shared by training and sampling
+decompose.compose(path, residual) -> (positions, quats)              # exact inverse of split
+decompose.conditioning(path) -> (N, 3)                               # speed m/s, yaw rate rad/s, curvature 1/m
+   # path = Gaussian low-pass (-3 dB at 0.5 Hz) of the positions, ends extended by point reflection; heading = its horizontal
+   # tangent (held when slower than 0.1 m/s), no pitch or roll. residual = [offset (x right, y up, z back) in the path frame, rotation vector]
+dataset: Sequence(source, name, residual, cond), assign_splits (hash of the recording, so segments never straddle splits), Stats, WindowSampler
+   # WINDOW = 200 samples (4 s), CONTEXT = 50 (the 1 s shared with the previous window), HOP = 150
+model.MotionUNet / Diffusion   # x0-prediction, cosine schedule, DDIM; the loss ignores the given context
+train.train(...) -> history; train.load_checkpoint(path) -> (model, TrainConfig, Stats, sources)
+   # checkpoint = {"version": "dvsim-motion-1", config/stats/sources as JSON strings, state_dict}: loaded with weights_only=True
+style.DiffusionMotionStyle.load(path).apply(trajectory, rng) -> WaypointTrajectory   # the trajectory's positions walked by a person; 50 Hz
+registry.resolve_model({"model": id} | {"path": file}) -> Path       # ids are files of $DVSIM_DATA_DIR/motion/<id>.pt (no torch)
+evaluate.compare / evaluate_model / events_report.compare_event_statistics            # motion-eval
+
 # backend/saving
 class EventWriter:  path, width, height, compression="zstd", t_offset_us=0; write(events); close()   # /events/{t,x,y,p}
 class GroundTruthWriter:  path, config, compression="zstd", t_offset_us=0; write(gt: GTFrame); close()  # /ground_truth/{timestamp,flow_dt_us,depth,optical_flow,flow_valid,rgb_left,rgb_right,pose}
@@ -159,6 +181,7 @@ POST   /api/scenes   multipart: obj (file), texture (file, optional), files (fil
 GET    /api/scenes                      -> [{"id","name","files","created_at"}]
 DELETE /api/scenes/{id}
 POST   /api/trajectories  json {"name": str, "points": [{"timestamp":ms,"x","y","z","rx","ry","rz"} ...]}  -> 201 {"id","name","num_points","duration_s"}
+GET    /api/motion-models               -> [{"id","size_bytes"}]  trained human-motion models ($DVSIM_DATA_DIR/motion/<id>.pt)
 GET    /api/trajectories                -> [{"id","name","num_points","duration_s","source":"upload|headset"}]
 GET    /api/trajectories/{id}           -> {..., "points":[...]}
 DELETE /api/trajectories/{id}           -> 204 (409 if a queued/running job references it)
@@ -175,7 +198,9 @@ POST   /api/jobs  json {
                       | {"type":"rectilinear","duration_s":float,"count":int,"seed":int|null}
                       | {"type":"spline","duration_s":float,"n_key_points":int,"count":int,"seed":int|null}
                       | {"type":"street","duration_s":float,"count":int,"seed":int|null,"speed":m/s,"eye_height":m,
-                         "min_clearance":m,"edge_margin":m}   (eye-height walks on open ground; scene +Y up, metres),
+                         "min_clearance":m,"edge_margin":m,"motion":{"model":id}|null}   (eye-height walks on open ground; scene +Y up,
+                         metres; `motion` plays the walk with a trained human-motion model: 404 unknown id, 501 when the server has no
+                         PyTorch; the job keeps the id, the worker gets the file),
           "config": <partial SimConfig dict>, "visualize": bool }             -> 202 {"id","status":"queued"}
 GET    /api/jobs                        -> [job]
 GET    /api/jobs/{id}                   -> job = {"id","status":"queued|running|done|failed|cancelled","error":str|null,

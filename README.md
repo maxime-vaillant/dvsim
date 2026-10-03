@@ -24,10 +24,12 @@ streams training clips straight into a PyTorch `DataLoader` (e.g. for spiking ne
   objects with their own position, rotation and scale.
 - Trajectories: recorded JSON paths, paths drawn in the web interface, paths recorded with an AR headset, or generated
   inside the scene: `rectilinear`, `spline`, and `street` (eye-height walks on open ground). Generation is fast: a voxel
-  free-space grid keeps the camera out of the geometry.
+  free-space grid keeps the camera out of the geometry. `street` walks can be played with learned human head motion
+  (bob, sway, roll, gaze shifts): see [Human-like camera motion](#human-like-camera-motion).
 
 **Ways to use it**
-- `dvsim` command line: `demo`, `run`, `sample-scene`, `serve`, `info`.
+- `dvsim` command line: `demo`, `run`, `sample-scene`, `serve`, `info`, and `motion-import` / `motion-train` /
+  `motion-eval` for human-like camera motion.
 - Web interface (three.js): live previews of the camera, events, depth and optical flow, trajectory drawing and
   preview, background simulation jobs with progress and downloads.
 - HTTP API (FastAPI) with background jobs, uploads, and WebSocket status.
@@ -112,6 +114,38 @@ default), `--compression zstd|gzip|none`, `--config file.json` (a partial `SimCo
 **Trajectory files** are JSON lists of `{"timestamp": ms, "x", "y", "z", "rx", "ry", "rz"}` (a forward vector) or
 `{..., "qx", "qy", "qz", "qw"}` (a full orientation). They can be recorded with the AR-headset page or drawn in the web
 interface. Positions can be offset with `--origin X Y Z`.
+
+## Human-like camera motion
+
+`street` walks glide: constant speed, no roll. A small diffusion model can learn how people really move a head-mounted
+camera and replay it on the planned path. The planner still keeps the camera out of the geometry; the model only adds
+the motion of the person (bob, sway, roll, gaze shifts, speed changes). Needs PyTorch: `pip install -e ".[torch]"`.
+
+```sh
+# 1. collect recordings of people walking (one call per dataset; re-importing a name replaces that source)
+dvsim motion-import tumrgbd tum /data/tum_rgbd --out corpus.npz        # TUM RGB-D groundtruth.txt files
+dvsim motion-import aria aria /data/adt --out corpus.npz               # Aria / ADT closed_loop_trajectory.csv
+dvsim motion-import mine headset recordings/ --out corpus.npz          # trajectories recorded with the AR headset
+
+# 2. train (a GPU or Apple MPS is used when there is one); the model is stored as $DVSIM_DATA_DIR/motion/walk-v1.pt
+dvsim motion-train --corpus corpus.npz --name walk-v1 --holdout-source mine
+
+# 3. check it against the recordings it never saw (--scene also compares event rates and optical flow)
+dvsim motion-eval --corpus corpus.npz --model walk-v1 --scene town.json
+
+# 4. use it
+dvsim run --scene town.json --generate street --motion walk-v1 --duration 30 --out out/
+```
+
+Each import prints a **heading agreement** per source: how well the camera looks where the person walks (1.0 for a
+head-mounted camera on a walking person). A value below 0.5 means the dataset's frame was misread; fix it with
+`--camera opengl|opencv` and `--up X Y Z`. Formats: `tum` (`t[s] x y z qx qy qz qw`), `aria`, `headset` (DVSim JSON) and
+`csv` (`--layout tumvi | dvsim`). In the web interface the model appears as "Human motion" once the street generator
+is selected; through the API it is `"motion": {"model": "walk-v1"}` on a `street` trajectory spec.
+
+Limits: the model is conditioned on speed and turning only, so it does not choose where to go, and it was trained on
+the speeds it saw (other speeds are clamped, with a warning). Training data decides the style: head-mounted glasses and
+handheld cameras move differently.
 
 ## Web interface
 
@@ -257,7 +291,7 @@ cd frontend && npm test
 ```
 
 Layout: `backend/scene` (loading), `graphical_computation` (one-pass renderer: RGB, luminance, depth, flow),
-`event_processing`, `trajectories`, `simulator.py`, `pipeline.py`, `saving`, `vizualisation`, `api`, `dataloader`,
+`event_processing`, `trajectories`, `motion` (learned human motion), `simulator.py`, `pipeline.py`, `saving`, `vizualisation`, `api`, `dataloader`,
 `samples`, `cli.py`; `frontend/` (Vite + three.js); `tests/`.
 
 Release notes are in [`CHANGELOG.md`](CHANGELOG.md).

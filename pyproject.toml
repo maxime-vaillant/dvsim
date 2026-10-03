@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dvsim"
-version = "0.2.0"
+version = "0.3.0"
 description = "DVSim: event-camera (DVS) simulator with ground-truth depth, optical flow and pose"
 readme = "README.md"
 requires-python = ">=3.9"
