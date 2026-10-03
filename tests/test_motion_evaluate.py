@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from backend.motion.dataset import Sequence
-from backend.motion.evaluate import classifier_accuracy, compare, format_report, step_frequency, windows
+from backend.motion.evaluate import (
+    classifier_accuracy, compare, format_report, format_seams, seam_ratio, step_frequency, windows,
+)
 
 
 def sequence(rng, name, freq=3.6, amp=0.02, n=1500):
@@ -102,3 +104,28 @@ def test_held_out_recordings_are_replayed_and_compared(motion_checkpoint):
     assert report and all(b["spectral_distance"]["generated"] < b["spectral_distance"]["plain"] for b in report)
     with pytest.raises(ValueError, match="no held-out recording"):
         evaluate_model(style, [synthetic_walk(i) for i in range(13, 17)])
+
+
+def test_seam_ratio_finds_a_kink_at_a_window_start():
+    rng = np.random.default_rng(0)
+    t = np.arange(700) / 50.0
+    smooth = np.zeros((700, 6))
+    smooth[:, 3:] = 0.05 * np.sin(2 * np.pi * 1.0 * t)[:, None] + 1e-4 * rng.standard_normal((700, 3))
+    assert seam_ratio(smooth) == pytest.approx(1.0, abs=0.5)
+    kinked = smooth[:340].copy()                                              # one window start inside: sample 200
+    kinked[200:, 3:] += 0.02                                                  # a step where the second window starts
+    assert seam_ratio(kinked) > 10.0
+    assert np.isnan(seam_ratio(smooth[:150]))                                 # no window start inside the clip
+    assert format_seams({"generated": 2.345, "real": 1.0}) == (
+        "window seams (jump at window starts / median step): generated 2.35, real 1.00")
+
+
+def test_seams_of_the_replayed_held_out_recordings(motion_checkpoint):
+    from motion_helpers import synthetic_walk
+
+    from backend.motion.evaluate import evaluate_seams
+    from backend.motion.style import DiffusionMotionStyle
+
+    style = DiffusionMotionStyle.load(motion_checkpoint, device="cpu", sample_steps=6)
+    seams = evaluate_seams(style, [synthetic_walk(i) for i in range(10, 18)], max_sequences=2, seed=0)
+    assert set(seams) == {"generated", "real"} and all(np.isfinite(v) and v > 0 for v in seams.values())

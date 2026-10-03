@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from motion_helpers import stop_and_turn
 from scipy.spatial.transform import Rotation
 
 from backend.motion.decompose import N_COND, N_RESIDUAL, PathFrame, compose, conditioning, extract_path, split
@@ -91,3 +92,16 @@ def test_invalid_input():
     path, _ = split(*walk(n=100))
     with pytest.raises(ValueError, match="residual must have shape"):
         compose(path, np.zeros((99, 6)))
+
+
+def test_turning_round_after_a_stop_does_not_spike_the_conditioning():
+    path = extract_path(stop_and_turn().positions)
+    cond = conditioning(path)
+    assert path.held.shape == (900,) and path.held[425:475].all()           # the stationary span (400-500), smoothed
+    assert not path.held[:400].any() and not path.held[500:].any()
+    assert np.abs(cond[:, 1]).max() < 2.0 and np.abs(cond[:, 2]).max() < 10.0   # the heading jump is not a turn
+    assert np.all(path.yaw_rate[path.held] == 0)
+
+
+def test_a_walk_that_never_stops_holds_no_heading():
+    assert not extract_path(walk()[0]).held.any() and not extract_path(walk(turn=0.2)[0]).held.any()

@@ -53,7 +53,7 @@ def test_training_and_evaluating_a_model(tmp_path, monkeypatch, capsys):
     assert main(["motion-eval", "--corpus", str(corpus), "--model", "tiny", "--sample-steps", "4", "--device", "cpu",
                  "--max-sequences", "2"]) == 0
     out = capsys.readouterr().out
-    assert "spectral distance" in out and "classifier accuracy" in out
+    assert "spectral distance" in out and "classifier accuracy" in out and "window seams" in out
     with pytest.raises(SystemExit, match="--name ID"):                      # exactly one of --name / --out
         main(train)
 

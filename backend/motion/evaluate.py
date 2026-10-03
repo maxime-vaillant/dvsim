@@ -8,7 +8,7 @@ from scipy import signal
 from scipy.optimize import minimize
 from scipy.stats import wasserstein_distance
 
-from backend.motion.dataset import Sequence, assign_splits, build_sequences, recording_key
+from backend.motion.dataset import HOP, WINDOW, Sequence, assign_splits, build_sequences, recording_key
 from backend.motion.decompose import extract_path, split
 from backend.motion.tracks import RATE_HZ, Track
 from backend.trajectories.trajectory import WaypointTrajectory
@@ -47,6 +47,18 @@ def step_frequency(w: np.ndarray) -> float:
     f, p = signal.welch(w[:, :, 1] - w[:, :, 1].mean(axis=1, keepdims=True), fs=RATE_HZ, nperseg=128, axis=1)
     band = (f >= 0.8) & (f <= 5.0)
     return float(f[band][np.argmax(p.mean(axis=0)[band])])
+
+
+def seam_ratio(residual: np.ndarray, first: int = WINDOW, every: int = HOP) -> float:
+    """How much the rotation jumps where a window starts generating after its context (samples ``first``,
+    ``first + every``, ...) relative to an ordinary step: median over the seams of the largest second difference
+    around the seam, divided by the median second difference. About 1 without seams; NaN if the clip has none."""
+    r = np.asarray(residual, dtype=np.float64)[:, 3:]
+    a = np.linalg.norm(r[2:] - 2 * r[1:-1] + r[:-2], axis=1)       # a[i] involves samples i, i+1, i+2
+    seams = [a[max(s - 2, 0):s + 1].max() for s in range(first, len(r) - 1, every)]
+    if not seams or not len(a):
+        return float("nan")
+    return float(np.median(seams) / max(np.median(a), _FLOOR))
 
 
 def motion_features(w: np.ndarray) -> Dict[str, np.ndarray]:
@@ -147,9 +159,10 @@ def compare(real: Seq[Sequence], generated: Seq[np.ndarray]) -> List[dict]:
     return report
 
 
-def evaluate_model(style, tracks: Seq[Track], max_sequences: int = 0, seed: int = 0) -> List[dict]:
-    """``compare`` on the recordings ``style``'s model never trained on (its own split settings, recomputed from the
-    corpus ``tracks``): each is replayed along its own smooth path and walked by the model."""
+def _replay(style, tracks: Seq[Track], max_sequences: int, seed: int) -> Tuple[List[Sequence], List[np.ndarray]]:
+    """(held-out sequences, generated residuals): the recordings ``style``'s model never trained on (its own split
+    settings, recomputed from the corpus ``tracks``), each replayed along its own smooth path and walked by the
+    model."""
     cfg = style.cfg
     seqs = build_sequences(tracks)
     splits = assign_splits(seqs, cfg.val_frac, cfg.test_frac, cfg.split_seed, cfg.holdout_sources)
@@ -165,7 +178,29 @@ def evaluate_model(style, tracks: Seq[Track], max_sequences: int = 0, seed: int 
         planned = WaypointTrajectory(track.times_us, path.positions, track.quats)
         walk = style.apply(planned, rng=seed + i)
         generated.append(split(walk.positions, walk.quats)[1])
-    return compare([seqs[i] for i in held_out], generated)
+    return [seqs[i] for i in held_out], generated
+
+
+def evaluate_model(style, tracks: Seq[Track], max_sequences: int = 0, seed: int = 0) -> List[dict]:
+    """``compare`` on the held-out recordings of the corpus ``tracks``, replayed by ``style`` (see ``_replay``)."""
+    return compare(*_replay(style, tracks, max_sequences, seed))
+
+
+def evaluate_seams(style, tracks: Seq[Track], max_sequences: int = 0, seed: int = 0) -> Dict[str, float]:
+    """Mean ``seam_ratio`` of the replayed held-out recordings ("generated") and of the same recordings as recorded
+    ("real": the same sample indices, where nothing special happens: the baseline)."""
+    real, generated = _replay(style, tracks, max_sequences, seed)
+    gen = [seam_ratio(g) for g in generated]
+    ref = [seam_ratio(s.residual) for s in real]
+    keep = [i for i, (g, r) in enumerate(zip(gen, ref)) if np.isfinite(g) and np.isfinite(r)]
+    if not keep:
+        return {"generated": float("nan"), "real": float("nan")}
+    return {"generated": float(np.mean([gen[i] for i in keep])), "real": float(np.mean([ref[i] for i in keep]))}
+
+
+def format_seams(result: Dict[str, float]) -> str:
+    return (f"window seams (jump at window starts / median step): generated {result['generated']:.2f}, "
+            f"real {result['real']:.2f}")
 
 
 def format_report(report: List[dict]) -> str:

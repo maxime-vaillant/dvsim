@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from motion_helpers import synthetic_walk
+from motion_helpers import stop_and_turn, synthetic_walk
 
 from backend.motion.dataset import (
     CONTEXT, HOP, WINDOW, Sequence, Stats, WindowSampler, assign_splits, build_sequences, recording_key, select,
@@ -82,3 +82,20 @@ def test_slow_and_short_material_gives_no_windows():
     short = Sequence("s", "short", np.zeros((100, 6)), np.ones((100, 3)))
     with pytest.raises(ValueError, match="no window"):
         WindowSampler([short], stats)
+
+
+def test_sequences_carry_the_held_heading_samples(seqs):
+    (turn,) = build_sequences([stop_and_turn()])
+    assert turn.held.shape == (900,) and turn.held[425:475].all() and not turn.held[:400].any()
+    assert seqs[0].held is not None and not seqs[0].held.any()
+
+
+def test_no_window_covers_a_held_heading():
+    held = np.zeros(600, bool)
+    held[40:60] = True                                                       # a pause near the start
+    paused = Sequence("s", "pause", np.zeros((600, 6)), np.tile([1.0, 0.0, 0.0], (600, 1)), held)
+    sampler = WindowSampler([paused], Stats.fit([paused]), hop=25)
+    starts = sampler._windows[0][:, 1]
+    assert starts.min() >= 60 and list(starts) == list(range(75, 401, 25))   # windows after the pause remain
+    plain = Sequence("s", "plain", np.zeros((600, 6)), np.tile([1.0, 0.0, 0.0], (600, 1)))
+    assert plain.held is None and WindowSampler([plain], Stats.fit([plain]), hop=25).n_windows == 17

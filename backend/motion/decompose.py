@@ -3,6 +3,8 @@
 The path is the low-passed position with a heading taken from its horizontal tangent (no pitch, no roll). The
 residual is what the person does on top of it, expressed in the path's own frame (axes: x right, y up, z back):
 the position offset (3) and the camera rotation relative to the path frame as a rotation vector (3).
+Where the path stands still the heading is held (``PathFrame.held``); the yaw rate is zero there and next to it, so
+turning round during a stop is not a spike of the conditioning.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ class PathFrame:
     rot: Rotation           # N rotations, path frame -> world (forward = -Z, up = +Y)
     speed: np.ndarray       # (N,) horizontal speed, m/s
     yaw_rate: np.ndarray    # (N,) rad/s, counter-clockwise seen from above
+    held: np.ndarray        # (N,) bool: the heading is held or back-filled (speed <= MIN_SPEED)
 
     def __len__(self) -> int:
         return len(self.positions)
@@ -64,7 +67,12 @@ def extract_path(positions, rate_hz: float = RATE_HZ, cutoff_hz: float = CUTOFF_
     psi = np.unwrap(np.arctan2(-h[:, 0], -h[:, 1]))   # forward = (-sin psi, 0, -cos psi)
     rot = Rotation.from_euler("y", psi)
     yaw_rate = np.gradient(psi, 1.0 / rate_hz)
-    return PathFrame(path, rot, speed, yaw_rate)
+    held = ~valid
+    near = held.copy()                        # the held span and one sample each side: the heading jumps there
+    near[1:] |= held[:-1]
+    near[:-1] |= held[1:]
+    yaw_rate[near] = 0.0
+    return PathFrame(path, rot, speed, yaw_rate, held)
 
 
 def conditioning(path: PathFrame) -> np.ndarray:

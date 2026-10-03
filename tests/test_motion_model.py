@@ -64,6 +64,22 @@ def test_sampling_is_reproducible_and_keeps_the_context():
     assert free.shape == a.shape
 
 
+def test_the_context_part_of_each_prediction_is_the_given_context():
+    seen = []
+
+    class Zero(torch.nn.Module):                                              # predicts nothing anywhere
+        def forward(self, x_t, t, cond, ctx, mask):
+            seen.append(x_t.clone())
+            return torch.zeros_like(x_t)
+
+    ctx = torch.full((1, WINDOW, 6), 3.0)
+    Diffusion(100).sample(Zero(), torch.zeros(1, WINDOW, 3), ctx, CONTEXT, steps=10,
+                          generator=torch.Generator().manual_seed(0))
+    last = seen[-1]                                                           # the input of the final (t=0) step
+    assert (last[:, :CONTEXT] - 3.0).abs().max() < 0.1                       # the context region was led to ctx ...
+    assert last[:, CONTEXT:].abs().max() < 0.5                                # ... the rest to the prediction, 0
+
+
 def test_the_network_can_learn_a_fixed_batch():
     torch.manual_seed(0)
     model, diffusion = tiny(), Diffusion(100)

@@ -121,6 +121,8 @@ class Diffusion:
         for k, ti in enumerate(ts):
             t = torch.full((b,), int(ti), device=dev, dtype=torch.long)
             x0 = model(x, t, cond, ctx, mask).clamp(-6, 6)
+            if ctx_len:                          # the loss never trained the context part: use the given context
+                x0[:, :ctx_len] = ctx[:, :ctx_len]
             a = abar[ti]
             eps = (x - a.sqrt() * x0) / (1 - a).sqrt()
             a_prev = abar[ts[k + 1]] if k + 1 < len(ts) else torch.tensor(1.0, device=dev)

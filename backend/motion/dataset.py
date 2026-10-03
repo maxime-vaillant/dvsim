@@ -1,9 +1,12 @@
-"""Sequences of (residual, conditioning), the sequence-level split, normalisation and window sampling. numpy only."""
+"""Sequences of (residual, conditioning), the sequence-level split, normalisation and window sampling. numpy only.
+
+Windows are trained on only where the person walks: a window whose mean speed is below ``MIN_WINDOW_SPEED`` or that
+contains a sample whose heading is held (the path stands still, see ``decompose.PathFrame.held``) is skipped."""
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence as Seq, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence as Seq, Tuple
 
 import numpy as np
 
@@ -22,6 +25,7 @@ class Sequence:
     name: str
     residual: np.ndarray   # (N, 6)
     cond: np.ndarray       # (N, 3) speed, yaw rate, curvature
+    held: Optional[np.ndarray] = None   # (N,) bool: heading held (path standing still); None: no such sample
 
     def __len__(self) -> int:
         return len(self.residual)
@@ -31,7 +35,7 @@ def build_sequences(tracks: Iterable[Track]) -> List[Sequence]:
     out = []
     for tr in tracks:
         path, residual = split(tr.positions, tr.quats)
-        out.append(Sequence(tr.source, tr.name, residual, conditioning(path)))
+        out.append(Sequence(tr.source, tr.name, residual, conditioning(path), path.held))
     return out
 
 
@@ -104,7 +108,8 @@ class Stats:
 
 
 class WindowSampler:
-    """Random normalised windows, sources weighted equally, then recordings by length."""
+    """Random normalised windows, sources weighted equally, then recordings by length. Only windows with a mean speed
+    of at least ``min_speed`` and no held-heading sample are drawn."""
 
     def __init__(self, seqs: Seq[Sequence], stats: Stats, hop: int = 25, min_speed: float = MIN_WINDOW_SPEED):
         self.stats = stats
@@ -113,6 +118,8 @@ class WindowSampler:
         by_source: Dict[str, List[Tuple[int, int]]] = {}
         for i, s in enumerate(seqs):
             for start in range(0, len(s) - WINDOW + 1, hop):
+                if s.held is not None and s.held[start:start + WINDOW].any():
+                    continue
                 if s.cond[start:start + WINDOW, 0].mean() >= min_speed:
                     by_source.setdefault(s.source, []).append((i, start))
         if not by_source:

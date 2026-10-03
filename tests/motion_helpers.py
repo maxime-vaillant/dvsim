@@ -43,3 +43,14 @@ def write_tum_walk(path, seconds: float = 40.0, rate_hz: float = 30.0) -> None:
     lines += [f"{1000 + ti:.6f} {1.3 * ti} 0 1.6 {quat[0]} {quat[1]} {quat[2]} {quat[3]}" for ti in t]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+
+
+def stop_and_turn(speed: float = 1.4) -> Track:
+    """Walk 8 s along -Z, stand still 2 s, walk 8 s back along +Z (50 Hz, camera looking where it walks)."""
+    v = np.concatenate([np.full(400, -speed), np.zeros(100), np.full(400, speed)])
+    z = np.cumsum(v) / 50.0
+    n = len(v)
+    pos = np.stack([np.zeros(n), np.full(n, 1.6), z], axis=1)
+    psi = np.where(np.arange(n) < 450, 0.0, np.pi)
+    quats = Rotation.from_euler("y", psi).as_quat()
+    return Track("syn", "turn", (np.arange(n) * DT_US).astype(np.int64), pos, quats)

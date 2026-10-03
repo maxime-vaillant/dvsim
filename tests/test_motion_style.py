@@ -7,6 +7,8 @@ from motion_helpers import planner_line
 
 torch = pytest.importorskip("torch")
 from backend.motion.dataset import CONTEXT, WINDOW  # noqa: E402
+from backend.motion.decompose import split  # noqa: E402
+from backend.motion.evaluate import seam_ratio  # noqa: E402
 from backend.motion.style import DiffusionMotionStyle  # noqa: E402
 from backend.motion.tracks import DT_US  # noqa: E402
 
@@ -67,3 +69,12 @@ def test_a_speed_the_model_never_saw_is_clamped_with_a_warning(style):
 def test_no_warning_inside_the_trained_range(style, recwarn):
     style.apply(planner_line(4, speed=1.3), rng=0)
     assert not [w for w in recwarn if "trained on" in str(w.message)]
+
+
+def test_window_seams_stay_small(style):
+    out = style.apply(planner_line(14), rng=1)                                # 5 windows: seams at 200, 350, 500, 650
+    ratio = seam_ratio(split(out.positions, out.quats)[1])
+    # Measured 4.20 with the fixture model (rng=1; 2.2-5.4 over seeds 0-9; 5.05 before the sampler kept the context
+    # in its x0 predictions). The bound is loose (more than 2x the measurement) because the fixture is a tiny
+    # 120-step model whose seams vary with the seed; it guards against a gross jump where generation takes over.
+    assert ratio < 10.0, ratio

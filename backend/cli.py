@@ -179,13 +179,14 @@ def _cmd_motion_train(a: argparse.Namespace) -> int:
 @_reports_errors
 def _cmd_motion_eval(a: argparse.Namespace) -> int:
     from backend.motion.corpus import load_corpus
-    from backend.motion.evaluate import evaluate_model, format_report
+    from backend.motion.evaluate import evaluate_model, evaluate_seams, format_report, format_seams
     from backend.motion.registry import resolve_model
     from backend.motion.style import DiffusionMotionStyle
 
     style = DiffusionMotionStyle.load(resolve_model(_motion_ref(a.model)), device=a.device, sample_steps=a.sample_steps)
     report = evaluate_model(style, load_corpus(a.corpus), a.max_sequences, a.seed)
     print(format_report(report))
+    print(format_seams(evaluate_seams(style, load_corpus(a.corpus), a.max_sequences, a.seed)))
     if a.scene:
         from backend.motion.events_report import compare_event_statistics, format_event_report
         from backend.scene import load_scene
