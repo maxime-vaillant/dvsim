@@ -44,7 +44,8 @@ def log_spectral_distance(a: np.ndarray, b: np.ndarray) -> float:
 
 def step_frequency(w: np.ndarray) -> float:
     """Frequency (Hz) of the strongest vertical-offset component between 0.8 and 5 Hz (the bob)."""
-    f, p = signal.welch(w[:, :, 1] - w[:, :, 1].mean(axis=1, keepdims=True), fs=RATE_HZ, nperseg=128, axis=1)
+    f, p = signal.welch(w[:, :, 1] - w[:, :, 1].mean(axis=1, keepdims=True), fs=RATE_HZ, nperseg=128, nfft=1024,
+                        axis=1)                  # zero-padded: a 0.05 Hz grid instead of 0.39 Hz
     band = (f >= 0.8) & (f <= 5.0)
     return float(f[band][np.argmax(p.mean(axis=0)[band])])
 
@@ -118,7 +119,8 @@ def classifier_accuracy(a: np.ndarray, b: np.ndarray, folds: int = 5, seed: int 
 def compare(real: Seq[Sequence], generated: Seq[np.ndarray]) -> List[dict]:
     """Per speed bin: metrics of the generated residuals (one array per real sequence, same conditions) against
     the real ones, next to two references: ``plain`` (no motion at all, what ``street`` gives) and ``real_other``
-    (even-numbered against odd-numbered real recordings: the noise floor, the best that can be expected)."""
+    (even-numbered against odd-numbered real recordings: the noise floor, the best that can be expected). The
+    classifier has the real-other reference only (``classifier_accuracy_real_other``)."""
     if len(real) != len(generated):
         raise ValueError(f"{len(real)} real sequences but {len(generated)} generated")
     rec_parity = _parity_by_recording(real)
@@ -152,9 +154,11 @@ def compare(real: Seq[Sequence], generated: Seq[np.ndarray]) -> List[dict]:
                                   "real_other": log_spectral_distance(even, odd) if has_ref else nan},
             "step_hz": {"real": step_frequency(r), "generated": step_frequency(g)},
             **{f"{name}_w1": {"generated": float(wasserstein_distance(fr[name], fg[name])),
+                              "plain": float(wasserstein_distance(fr[name], np.zeros(1))),
                               "real_other": float(wasserstein_distance(fe[name], fo[name])) if has_ref else nan}
                for name in fr},
             "classifier_accuracy": classifier_accuracy(r, g),
+            "classifier_accuracy_real_other": classifier_accuracy(even, odd) if has_ref else nan,
         })
     return report
 
@@ -214,6 +218,8 @@ def format_report(report: List[dict]) -> str:
         lines.append(f"  step frequency     real {st['real']:.2f} Hz  generated {st['generated']:.2f} Hz")
         for name in ("angular_speed", "acceleration", "jerk"):
             w = b[f"{name}_w1"]
-            lines.append(f"  {name:<18} W1 generated {w['generated']:.3g}  real-other {w['real_other']:.3g}")
-        lines.append(f"  classifier accuracy {b['classifier_accuracy']:.2f} (0.50 = indistinguishable)")
+            lines.append(f"  {name:<18} W1 generated {w['generated']:.3g}  plain {w['plain']:.3g}  "
+                         f"real-other {w['real_other']:.3g}")
+        lines.append(f"  classifier accuracy {b['classifier_accuracy']:.2f}  real-other "
+                     f"{b['classifier_accuracy_real_other']:.2f} (0.50 = indistinguishable)")
     return "\n".join(lines)

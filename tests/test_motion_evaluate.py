@@ -37,6 +37,10 @@ def test_the_right_process_is_close_and_far_better_than_no_motion(runs):
     assert b["spectral_distance"]["generated"] < 3 * b["spectral_distance"]["real_other"] + 0.05
     assert b["step_hz"]["real"] == pytest.approx(3.5, abs=0.25) and b["step_hz"]["generated"] == pytest.approx(3.5, abs=0.25)
     assert b["classifier_accuracy"] < 0.8
+    for name in ("angular_speed", "acceleration", "jerk"):                    # no motion is far from real motion
+        w = b[f"{name}_w1"]
+        assert set(w) == {"generated", "plain", "real_other"} and w["plain"] > 3 * w["real_other"]
+    assert 0.2 < b["classifier_accuracy_real_other"] < 0.8                    # real against real: chance
 
 
 def test_the_wrong_process_is_found_out(runs):
@@ -53,6 +57,10 @@ def test_report_text(runs):
     text = format_report(compare(real, good))
     for part in ("speed 1.2-1.6 m/s (84 windows)", "spectral distance", "step frequency", "jerk", "classifier accuracy"):
         assert part in text
+    lines = text.splitlines()
+    assert all(" plain " in line and "real-other" in line for line in lines if " W1 " in line)
+    (cls,) = [line for line in lines if "classifier accuracy" in line]
+    assert "real-other" in cls
 
 
 def test_windows_and_helpers():
@@ -62,7 +70,7 @@ def test_windows_and_helpers():
     assert np.isnan(classifier_accuracy(np.zeros((2, 200, 6)), np.zeros((2, 200, 6))))
     bob = np.zeros((1, 200, 6))
     bob[0, :, 1] = np.sin(2 * np.pi * 3.0 * np.arange(200) / 50)
-    assert step_frequency(bob) == pytest.approx(3.0, abs=0.4)
+    assert step_frequency(bob) == pytest.approx(3.0, abs=0.06)              # zero-padded: a fine frequency grid
 
 
 def test_inputs_are_checked(runs):
