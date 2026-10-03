@@ -72,6 +72,9 @@ def _cmd_run(a: argparse.Namespace) -> int:
     if bool(a.trajectory) == bool(a.generate):
         print("error: give either --trajectory FILE... or --generate rectilinear|spline|street", file=sys.stderr)
         return 2
+    if a.trajectory and a.motion:
+        print("error: --motion needs --generate street", file=sys.stderr)
+        return 2
     if a.trajectory:
         traj = [{"type": "file", "path": str(p), "origin": a.origin} for p in a.trajectory]
     else:
@@ -116,7 +119,7 @@ def _motion_ref(value: str) -> dict:
 
 @_reports_errors
 def _cmd_motion_import(a: argparse.Namespace) -> int:
-    from backend.motion.corpus import import_source, load_corpus, save_corpus
+    from backend.motion.corpus import import_source, load_corpus, npz_path, save_corpus
 
     tracks, report = import_source(a.name, a.path, a.format, a.layout, a.up, a.camera)
     print(f"{a.name}: {report.files} file(s), {report.segments} segment(s), {report.hours:.2f} h, "
@@ -126,22 +129,26 @@ def _cmd_motion_import(a: argparse.Namespace) -> int:
     if not tracks:
         print("error: nothing to import", file=sys.stderr)
         return 1
-    kept = [t for t in load_corpus(a.out) if t.source != a.name] if a.out.exists() else []
-    save_corpus(a.out, kept + tracks)
-    print(f"{a.out}: {len(kept) + len(tracks)} segment(s) from {len({t.source for t in kept + tracks})} source(s)")
+    kept = [t for t in load_corpus(a.out) if t.source != a.name] if npz_path(a.out).exists() else []
+    written = save_corpus(a.out, kept + tracks)
+    print(f"{written}: {len(kept) + len(tracks)} segment(s) from {len({t.source for t in kept + tracks})} source(s)")
     return 0
 
 
 def _model_path(name: Optional[str], out: Optional[Path]) -> Path:
-    from backend.motion.registry import SUFFIX, models_dir
+    """The checkpoint file to write, its folder made now: a bad name or folder fails before training starts."""
+    from backend.motion.registry import SUFFIX, check_model_id, models_dir
 
     if bool(name) == bool(out):
         raise SystemExit("error: give either --name ID (stored in $DVSIM_DATA_DIR/motion) or --out FILE")
-    if out:
-        return out
-    folder = models_dir()
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder / f"{name}{SUFFIX}"
+    path = out if out else models_dir() / f"{check_model_id(name)}{SUFFIX}"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"cannot create the folder of {path}: {exc}") from None
+    if not os.access(path.parent, os.W_OK):
+        raise ValueError(f"cannot write to {path.parent}")
+    return path
 
 
 @_reports_errors

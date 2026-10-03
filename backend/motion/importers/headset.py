@@ -8,5 +8,8 @@ from backend.trajectories.trajectory import WaypointTrajectory
 
 
 def read_headset(path: Path, name: str) -> RawTrack:
-    traj = WaypointTrajectory.from_json(path, on_duplicate="drop")
+    try:
+        traj = WaypointTrajectory.from_json(path, on_duplicate="drop")
+    except ValueError as exc:            # bad records, and json.JSONDecodeError: neither names the file
+        raise ValueError(f"{path}: {exc}") from None
     return RawTrack(name, traj.times_us, traj.positions, traj.quats)

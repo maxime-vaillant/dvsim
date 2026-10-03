@@ -126,7 +126,7 @@ def test_registry(tmp_path):
     assert [m["id"] for m in list_models(tmp_path)] == ["walk-v1"]
     assert list_models(tmp_path / "none") == []
     assert resolve_model({"path": str(folder / "walk-v1.pt")}) == folder / "walk-v1.pt"
-    for bad in ("../walk-v1", "a/b", "", ".x", "x" * 65, None, 3):
+    for bad in ("../walk-v1", "a/b", "", ".x", "x" * 65, None, 3, "walk-v1\n"):
         with pytest.raises(ValueError, match="invalid motion model id"):
             resolve_model({"model": bad}, tmp_path)
     with pytest.raises(FileNotFoundError, match="'other' not found"):
@@ -134,3 +134,41 @@ def test_registry(tmp_path):
     with pytest.raises(FileNotFoundError, match="file not found"):
         resolve_model({"path": str(folder / "gone.pt")})
     assert MODEL_ID.match("walk_v1.2")
+    (folder / "trail\n.pt").write_bytes(b"x")                              # "$" alone would accept the newline
+    assert [m["id"] for m in list_models(tmp_path)] == ["walk-v1"]
+
+
+def _tumvi_rows():
+    lines = ["#timestamp [ns],px,py,pz,qw,qx,qy,qz"]
+    return lines + [f"{int(t * 1e9)},{p[0]},{p[1]},{p[2]},{QUAT[3]},{QUAT[0]},{QUAT[1]},{QUAT[2]}" for t, p in zip(T, POS)]
+
+
+def test_a_tumvi_tree_imports_only_the_mocap_files(tmp_path):
+    for seq in ("room1", "room2"):
+        mav = tmp_path / seq / "mav0"
+        for sensor in ("cam0", "imu0", "mocap0"):
+            (mav / sensor).mkdir(parents=True)
+        (mav / "cam0" / "data.csv").write_text("#timestamp [ns],filename\n1,1.png\n2,2.png\n")
+        (mav / "imu0" / "data.csv").write_text("#timestamp [ns],w_x,w_y,w_z\n1,0,0,0\n")
+        (mav / "mocap0" / "data.csv").write_text("\n".join(_tumvi_rows()))
+    raws = read(tmp_path, "csv")
+    assert sorted(r.name for r in raws) == ["room1/mav0/mocap0/data", "room2/mav0/mocap0/data"]
+    tracks, report = import_source("tumvi", tmp_path, "csv")
+    assert report.files == 2 and report.segments == 2 and report.agreement == pytest.approx(1.0)
+
+
+def test_headset_errors_name_the_file(tmp_path):
+    (tmp_path / "broken.json").write_text("[{")
+    with pytest.raises(ValueError, match=r"broken\.json: "):
+        read(tmp_path / "broken.json", "headset")
+    (tmp_path / "partial.json").write_text(json.dumps([{"timestamp": 0, "x": 0}, {"timestamp": 1, "x": 0}]))
+    with pytest.raises(ValueError, match=r"partial\.json: record 0: missing y, z"):
+        read(tmp_path / "partial.json", "headset")
+
+
+def test_a_corpus_path_without_npz_is_found(tmp_path):
+    write_tum(tmp_path / "groundtruth.txt")
+    tracks, _ = import_source("tumrgbd", tmp_path, "tum")
+    assert save_corpus(tmp_path / "corpus", tracks) == tmp_path / "corpus.npz"
+    assert (tmp_path / "corpus.npz").is_file() and not (tmp_path / "corpus").exists()
+    assert len(load_corpus(tmp_path / "corpus")) == 1 and len(load_corpus(tmp_path / "corpus.npz")) == 1

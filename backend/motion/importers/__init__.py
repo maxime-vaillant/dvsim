@@ -15,7 +15,7 @@ _PATTERNS = {
     "tum": ("groundtruth.txt", "*.txt"),
     "aria": ("closed_loop_trajectory.csv", "*trajectory*.csv"),
     "headset": ("*.json",),
-    "csv": ("*.csv",),
+    "csv": ("mocap0/data.csv", "*.csv"),     # a TUM-VI tree also holds cam0/ and imu0/ data.csv
 }
 FORMATS = tuple(_PATTERNS)
 

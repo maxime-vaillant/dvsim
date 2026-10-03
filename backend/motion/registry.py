@@ -15,6 +15,13 @@ def models_dir(data_dir: Optional[Path] = None) -> Path:
     return Path(data_dir or default_data_dir()) / "motion"
 
 
+def check_model_id(model: Any) -> str:
+    """``model`` if it is a valid model id (a file name of the models directory), else ValueError."""
+    if not isinstance(model, str) or not MODEL_ID.fullmatch(model):
+        raise ValueError(f"invalid motion model id {model!r}: use 1-64 letters, digits, '.', '_' or '-'")
+    return model
+
+
 def resolve_model(ref: Mapping[str, Any], data_dir: Optional[Path] = None) -> Path:
     """The checkpoint file a ``motion`` spec points at: ``{"model": id}`` (a file of the models directory) or
     ``{"path": file}`` (CLI and trusted callers). Raises ValueError for a malformed reference and
@@ -24,9 +31,7 @@ def resolve_model(ref: Mapping[str, Any], data_dir: Optional[Path] = None) -> Pa
         if not path.is_file():
             raise FileNotFoundError(f"motion model file not found: {path}")
         return path
-    model = ref.get("model")
-    if not isinstance(model, str) or not MODEL_ID.match(model):
-        raise ValueError(f"invalid motion model id {model!r}: use 1-64 letters, digits, '.', '_' or '-'")
+    model = check_model_id(ref.get("model"))
     path = models_dir(data_dir) / f"{model}{SUFFIX}"
     if not path.is_file():
         raise FileNotFoundError(f"motion model {model!r} not found in {path.parent}")
@@ -38,4 +43,4 @@ def list_models(data_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     if not folder.is_dir():
         return []
     return [{"id": p.stem, "size_bytes": p.stat().st_size}
-            for p in sorted(folder.glob(f"*{SUFFIX}")) if MODEL_ID.match(p.stem)]
+            for p in sorted(folder.glob(f"*{SUFFIX}")) if MODEL_ID.fullmatch(p.stem)]
