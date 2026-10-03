@@ -47,6 +47,7 @@ function makeFake({ steps = 3 } = {}) {
             return json(res, 201, { id, name: state.scenes.get(id).name, files: fields.filter(f => f.filename).map(f => f.filename) });
         }
         if (pathname === '/api/scenes') return json(res, 200, [...state.scenes.values()]);
+        if (pathname === '/api/motion-models') return json(res, 200, [{ id: 'walk-v1', size_bytes: 4096 }]);
 
         if (pathname === '/api/trajectories/generate' && req.method === 'POST') {
             const payload = JSON.parse((await body(req)).toString());
@@ -197,6 +198,14 @@ test('client: health, scene upload (multipart), job creation, file URLs', async 
     assert.equal(client.jobFileUrl('job1', 'seq 0/a+b.h5'), `${fake.url}/api/jobs/job1/files/seq%200/a%2Bb.h5`);
     const download = await fetch(client.jobFileUrl('job1', 'seq_000/left_events.h5'));
     assert.equal(await download.text(), 'file:seq_000/left_events.h5');
+});
+
+test('client: trained human-motion models are listed', async (t) => {
+    const fake = await makeFake();
+    t.after(fake.close);
+    setApiBase(fake.url);
+
+    assert.deepEqual(await client.listMotionModels(), [{ id: 'walk-v1', size_bytes: 4096 }]);
 });
 
 test('client: HTTP errors carry the server detail, network errors are flagged', async (t) => {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
 import {
-    DEFAULT_SIM_SETTINGS, buildJobRequest, buildSimConfig, buildTrajectorySpec, parseSeed, restoreSimSettings
+    DEFAULT_SIM_SETTINGS, buildJobRequest, buildSimConfig, buildTrajectorySpec, motionOptions, parseSeed, restoreSimSettings
 } from '../src/utils/simRequest.js';
 
 const sim = (overrides = {}) => ({ ...DEFAULT_SIM_SETTINGS, ...overrides });
@@ -90,6 +90,28 @@ test('Generated: server-side generators with an optional seed', () => {
     assert.throws(() => buildTrajectorySpec('Generated', { sim: sim({ genCount: 0 }) }), /Count/);
     assert.throws(() => buildTrajectorySpec('Generated', { sim: sim({ genDuration: 0 }) }), /Duration/);
     assert.throws(() => buildTrajectorySpec('Generated', { sim: sim({ genKind: 'spline', genKeyPoints: 1 }) }), /Key points/);
+});
+
+test('Generated street walks can name a human-motion model; other generators ignore it', () => {
+    assert.equal(DEFAULT_SIM_SETTINGS.genMotion, '');
+    assert.deepEqual(
+        buildTrajectorySpec('Generated', { sim: sim({ genKind: 'street', genDuration: 20, genSeed: '1', genMotion: 'walk-v1' }) }),
+        { type: 'street', duration_s: 20, count: 1, seed: 1, motion: { model: 'walk-v1' } }
+    );
+    assert.equal('motion' in buildTrajectorySpec('Generated', { sim: sim({ genKind: 'street', genMotion: '' }) }), false);
+    assert.equal('motion' in buildTrajectorySpec('Generated', { sim: sim({ genKind: 'spline', genMotion: 'walk-v1' }) }), false);
+    assert.equal(buildJobRequest('Generated', { sim: sim({ genKind: 'street', genMotion: 'walk-v1' }) }).trajectory.motion.model, 'walk-v1');
+});
+
+test('the Human motion dropdown offers the glide first, then the trained models', () => {
+    assert.deepEqual(motionOptions([]), { 'None (planner glide)': '' });
+    assert.deepEqual(motionOptions([{ id: 'walk-v1', size_bytes: 5 }, { id: 'run' }]), { 'None (planner glide)': '', 'walk-v1': 'walk-v1', run: 'run' });
+    assert.deepEqual(motionOptions(undefined), { 'None (planner glide)': '' });
+});
+
+test('a stored motion model is restored, a wrongly typed one is not', () => {
+    assert.equal(restoreSimSettings(sim(), { genMotion: 'walk-v1' }).genMotion, 'walk-v1');
+    assert.equal(restoreSimSettings(sim(), { genMotion: 3 }).genMotion, '');
 });
 
 test('Live cannot be simulated', () => {

@@ -72,6 +72,11 @@ export function listScenes(options) {
     return request('/api/scenes', options);
 }
 
+/** Trained human-motion models: [{ id, size_bytes }]. */
+export function listMotionModels(options) {
+    return request('/api/motion-models', options);
+}
+
 /**
  * Upload an OBJ (+ optional texture image) as a multipart form, or a multi-file scene: `extras` are the other files
  * ({ blob, name }: more OBJ files, the MTL files, the textures). Resolves to { id, name, files }.

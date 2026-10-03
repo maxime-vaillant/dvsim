@@ -6,6 +6,7 @@ import { sampleConstantSpeed } from './trajectorySampling.js';
 
 export const GT_FIELDS = ['rgb', 'depth', 'flow', 'pose'];
 export const GENERATED_KINDS = ['rectilinear', 'spline', 'street'];
+export const NO_MOTION = '';
 
 
 export const DEFAULT_SIM_SETTINGS = {
@@ -31,6 +32,7 @@ export const DEFAULT_SIM_SETTINGS = {
     genCount: 1,
     genKeyPoints: 6,
     genSeed: '',
+    genMotion: NO_MOTION,   // street walks: the id of a trained human-motion model, '' = the planner's own glide
 
     // imported / live positions are relative to ...
     originMode: 'Object centre'
@@ -132,6 +134,7 @@ export function buildTrajectorySpec(type, { curve = null, records = null, origin
 
             if (!GENERATED_KINDS.includes(spec.type)) throw new Error(`Unknown generator "${spec.type}".`);
             if (spec.type === 'spline') spec.n_key_points = requireInteger(sim.genKeyPoints, 'Key points', 2);
+            if (spec.type === 'street' && sim.genMotion) spec.motion = { model: String(sim.genMotion) };
 
             return spec;
         }
@@ -139,6 +142,15 @@ export function buildTrajectorySpec(type, { curve = null, records = null, origin
         default:
             throw new Error('Live trajectories cannot be simulated: choose Custom, Imported or Generated.');
     }
+}
+
+/** Options of the "Human motion" dropdown: the planner's own glide, then one entry per trained model (GET /api/motion-models). */
+export function motionOptions(models) {
+    const options = { 'None (planner glide)': NO_MOTION };
+
+    (Array.isArray(models) ? models : []).forEach(model => { options[model.id] = model.id; });
+
+    return options;
 }
 
 /** { trajectory, config, visualize }: everything of POST /api/jobs except scene_id. */

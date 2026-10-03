@@ -3,7 +3,8 @@ import { currentOrigin } from "./origin";
 import { armPicking, clearLiveStart, publishLiveOrigin, setLiveHeading } from "./liveStart";
 import { getSceneFiles, saveSimSettings, sceneStore } from "./simulation";
 import { generatePreview } from "../api/trajectoryPreview.js";
-import { GENERATED_KINDS, buildTrajectorySpec } from "../utils/simRequest.js";
+import { listMotionModels } from "../api/client.js";
+import { GENERATED_KINDS, NO_MOTION, buildTrajectorySpec, motionOptions } from "../utils/simRequest.js";
 import { ORIGIN_MODES } from "../utils/trajectoryOrigin.js";
 import { clearGeneratedPaths, setGeneratedPaths, showGeneratedPaths, updateImportedTrajectory } from "../utils/trajectorySetup.js";
 import { sampleConstantSpeed } from "../utils/trajectorySampling.js";
@@ -86,17 +87,41 @@ export function addTrajectoryOptions(folder) {
     const count = folder.add(sim, 'genCount', 1, 100, 1).name('Sequences');
     const keyPoints = folder.add(sim, 'genKeyPoints', 2, 20, 1).name('Key points');
     const seed = folder.add(sim, 'genSeed').name('Seed (empty = random)');
+    // Street walks can be played by a trained human-motion model; the list comes from the server.
+    let motion = folder.add(sim, 'genMotion', motionOptions([])).name('Human motion');
     const preview = folder.add(actions, 'previewPaths').name('Preview paths');
     const pathToPlay = folder.add(actions, 'pathToPlay', 1, 2, 1).name('Path to play').onChange(selectPath);
     const generated = [kind, duration, count, seed, preview];
 
     // Different settings give different paths: the preview no longer shows what would be simulated.
-    [kind, duration, count, keyPoints, seed].forEach(controller => controller.onChange(() => {
+    const onGeneratorSettingChange = () => {
         clearGeneratedPaths();
         resetPlayback();
         updateVisibility();
         if (THREE_VARIABLES.settings.trajectoryType === 'Generated') showGeneratedPaths();
-    }));
+    };
+
+    [kind, duration, count, keyPoints, seed].forEach(controller => controller.onChange(onGeneratorSettingChange));
+    kind.onChange(() => { if (sim.genKind === 'street') refreshMotionModels(); });
+    motion.onChange(onGeneratorSettingChange);
+
+    // lil-gui rebuilds a dropdown to change its options: the new one is put back before "Preview paths".
+    async function refreshMotionModels() {
+        let models;
+
+        try {
+            models = await listMotionModels();
+        } catch (error) {
+            return; // no server (or an old one): the dropdown keeps offering the planner's glide only
+        }
+
+        if (!models.some(model => model.id === sim.genMotion)) sim.genMotion = NO_MOTION;
+
+        motion = motion.options(motionOptions(models));
+        motion.onChange(onGeneratorSettingChange);
+        folder.$children.insertBefore(motion.domElement, preview.domElement);
+        updateVisibility();
+    }
 
     function resetPlayback() {
         THREE_VARIABLES.isPlaying = false;
@@ -158,10 +183,12 @@ export function addTrajectoryOptions(folder) {
         heading.updateDisplay();
         generated.forEach(controller => controller.show(type === 'Generated'));
         keyPoints.show(type === 'Generated' && sim.genKind === 'spline');
+        motion.show(type === 'Generated' && sim.genKind === 'street');
         pathToPlay.show(type === 'Generated' && THREE_VARIABLES.generatedPaths.length > 1);
     }
 
     updateVisibility();
+    refreshMotionModels();
 
     return updateVisibility;
 }
